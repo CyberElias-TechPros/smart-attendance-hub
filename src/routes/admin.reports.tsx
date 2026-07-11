@@ -9,6 +9,7 @@ import { Progress } from "@/components/ui/progress";
 import { FileDown, FileSpreadsheet, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { exportPDF, exportExcel } from "@/lib/exporters";
+import { useAtRiskThreshold } from "@/lib/useSiteSettings";
 
 const coursesQO = queryOptions({ queryKey: ["courses"], queryFn: () => listCourses() });
 
@@ -19,6 +20,7 @@ export const Route = createFileRoute("/admin/reports")({
 
 function ReportsPage() {
   const { data: courses } = useSuspenseQuery(coursesQO);
+  const threshold = useAtRiskThreshold();
   const [courseId, setCourseId] = useState<string>(courses[0]?.id ?? "");
 
   const reportQ = useQuery({
@@ -93,7 +95,7 @@ function ReportsPage() {
                     <TableCell>
                       <div className="flex items-center gap-3">
                         <Progress value={s.percentage} className="h-2" />
-                        <span className={s.percentage < 70 ? "text-destructive font-mono text-sm" : "font-mono text-sm"}>{s.percentage}%</span>
+                        <span className={s.percentage < threshold ? "text-destructive font-mono text-sm" : "font-mono text-sm"}>{s.percentage}%</span>
                       </div>
                     </TableCell>
                   </TableRow>

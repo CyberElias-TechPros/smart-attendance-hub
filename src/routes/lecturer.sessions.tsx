@@ -4,6 +4,9 @@ import { Link } from "@tanstack/react-router";
 import { useSuspenseQuery, queryOptions } from "@tanstack/react-query";
 import { lecturerCourses } from "@/lib/api.functions";
 import { PlayCircle, BookOpen } from "lucide-react";
+import { CourseGlyph } from "@/lib/courseIcons";
+import { RouteTransition } from "@/components/RouteTransition";
+import { EmptyState } from "@/components/EmptyState";
 
 const coursesQO = queryOptions({ queryKey: ["lecturer", "courses"], queryFn: () => lecturerCourses() });
 
@@ -17,7 +20,15 @@ function SessionsIndex() {
   return (
     <>
       <PageHeader title="Sessions" subtitle="Pick a course to start or review sessions." />
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <RouteTransition stagger className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {courses.length === 0 && (
+          <EmptyState
+            className="col-span-full"
+            icon={<BookOpen className="h-7 w-7" />}
+            title="No courses yet"
+            description="You haven't been assigned to any courses yet."
+          />
+        )}
         {courses.map((c) => (
           <Link
             key={c.id}
@@ -26,7 +37,7 @@ function SessionsIndex() {
             className="group rounded-2xl border border-border/70 bg-card p-5 shadow-elegant transition hover:-translate-y-0.5 hover:shadow-lift"
           >
             <div className="flex items-center gap-3">
-              <div className="grid h-10 w-10 place-items-center rounded-xl bg-primary/10 text-primary"><BookOpen className="h-5 w-5" /></div>
+              <CourseGlyph icon={c.icon} color={c.color} seed={c.code} size="md" />
               <div>
                 <div className="font-mono text-xs text-muted-foreground">{c.code}</div>
                 <div className="font-display font-semibold">{c.title}</div>
@@ -37,7 +48,7 @@ function SessionsIndex() {
             </div>
           </Link>
         ))}
-      </div>
+      </RouteTransition>
     </>
   );
 }

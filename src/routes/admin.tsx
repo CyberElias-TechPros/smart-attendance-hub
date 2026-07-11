@@ -1,7 +1,7 @@
 import { createFileRoute, redirect, Outlet } from "@tanstack/react-router";
 import { me } from "@/lib/api.functions";
 import { AppShell, type NavItem } from "@/components/AppShell";
-import { LayoutDashboard, GraduationCap, Users, Building2, BookOpen, FileBarChart } from "lucide-react";
+import { LayoutDashboard, GraduationCap, Users, Building2, BookOpen, FileBarChart, Settings, Settings2 } from "lucide-react";
 
 const nav: NavItem[] = [
   { to: "/admin", label: "Overview", icon: LayoutDashboard },
@@ -10,6 +10,8 @@ const nav: NavItem[] = [
   { to: "/admin/departments", label: "Departments", icon: Building2 },
   { to: "/admin/courses", label: "Courses", icon: BookOpen },
   { to: "/admin/reports", label: "Reports", icon: FileBarChart },
+  { to: "/admin/settings", label: "Branding", icon: Settings2 },
+  { to: "/settings", label: "Settings", icon: Settings },
 ];
 
 export const Route = createFileRoute("/admin")({

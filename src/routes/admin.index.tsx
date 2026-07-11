@@ -4,6 +4,8 @@ import { adminOverview } from "@/lib/api.functions";
 import { PageHeader, StatCard } from "@/components/AppShell";
 import { GraduationCap, Users, BookOpen, Building2, PlayCircle, ClipboardCheck } from "lucide-react";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+import { useSiteSettings } from "@/lib/useSiteSettings";
+import { RouteTransition } from "@/components/RouteTransition";
 
 const overviewQO = queryOptions({
   queryKey: ["admin", "overview"],
@@ -17,8 +19,10 @@ export const Route = createFileRoute("/admin/")({
 
 function AdminOverviewPage() {
   const { data } = useSuspenseQuery(overviewQO);
+  const { data: settings } = useSiteSettings();
+  const primary = settings?.primaryColor ?? "oklch(0.44 0.11 165)";
   return (
-    <>
+    <RouteTransition>
       <PageHeader title="Overview" subtitle="Faculty-wide attendance at a glance." />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <StatCard label="Students" value={data.counts.students} icon={GraduationCap} />
@@ -38,8 +42,8 @@ function AdminOverviewPage() {
               <AreaChart data={data.weeklyAttendance} margin={{ left: -20, right: 8, top: 8, bottom: 0 }}>
                 <defs>
                   <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="oklch(0.44 0.11 165)" stopOpacity={0.5} />
-                    <stop offset="100%" stopColor="oklch(0.44 0.11 165)" stopOpacity={0} />
+                    <stop offset="0%" stopColor={primary} stopOpacity={0.5} />
+                    <stop offset="100%" stopColor={primary} stopOpacity={0} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.9 0.01 165)" />
@@ -48,7 +52,7 @@ function AdminOverviewPage() {
                 <Tooltip
                   contentStyle={{ borderRadius: 12, border: "1px solid oklch(0.9 0.01 165)", fontSize: 12 }}
                 />
-                <Area type="monotone" dataKey="count" stroke="oklch(0.44 0.11 165)" strokeWidth={2} fill="url(#g1)" />
+                <Area type="monotone" dataKey="count" stroke={primary} strokeWidth={2} fill="url(#g1)" />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -78,6 +82,6 @@ function AdminOverviewPage() {
           </ul>
         </div>
       </div>
-    </>
+    </RouteTransition>
   );
 }

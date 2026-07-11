@@ -10,6 +10,7 @@ import { CheckCircle2, QrCode, Loader2, Camera, MapPin } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { z } from "zod";
+import { burstSuccess } from "@/lib/confetti";
 
 const searchSchema = z.object({ code: z.string().optional() });
 
@@ -29,6 +30,13 @@ function AttendPage() {
   const [scanning, setScanning] = useState(false);
   const scanRegionRef = useRef<HTMLDivElement>(null);
   const scannerRef = useRef<any>(null);
+  const [autoCam, setAutoCam] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("slams:auto-camera") === "1";
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
     return () => {
@@ -38,6 +46,13 @@ function AttendPage() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (autoCam && !result && !scanning) {
+      startScan();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoCam]);
 
   const startScan = async () => {
     setScanning(true);
@@ -85,6 +100,7 @@ function AttendPage() {
       }
       const r = await submitFn({ data: { code: c, ...coords } });
       setResult(r);
+      burstSuccess();
       toast.success("Attendance recorded");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
@@ -98,14 +114,16 @@ function AttendPage() {
       <PageHeader title="Sign in to a lecture" subtitle="Scan the QR displayed by your lecturer, or type the 6-digit code." />
 
       {result ? (
-        <div className="mx-auto max-w-lg rounded-3xl border border-success/40 bg-success/5 p-8 text-center shadow-lift animate-fade-up">
-          <div className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-success/15 text-success">
+        <div className="relative mx-auto max-w-lg overflow-hidden rounded-3xl border border-success/40 bg-success/5 p-8 text-center shadow-lift animate-scale-in">
+          <div aria-hidden className="pointer-events-none absolute -top-16 left-1/2 h-40 w-40 -translate-x-1/2 rounded-full bg-success/20 blur-3xl" />
+          <div className="relative mx-auto grid h-16 w-16 animate-pulse-ring place-items-center rounded-full bg-gradient-to-br from-success to-emerald-600 text-white shadow-glow">
             <CheckCircle2 className="h-8 w-8" />
           </div>
-          <h2 className="mt-4 font-display text-2xl font-semibold">You're signed in</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {result.course.code} · {result.course.title}
-          </p>
+           <h2 className="mt-4 font-display text-2xl font-semibold">You're signed in 🎉</h2>
+           <p className="mt-1 text-sm text-muted-foreground">
+             {result.course.code} · {result.course.title}
+           </p>
+           <p className="mt-1 text-xs text-success">Your attendance is locked in. Nicely done.</p>
           <p className="mt-1 font-mono text-xs text-muted-foreground">{new Date(result.timestamp).toLocaleString()}</p>
           <Button className="mt-6" onClick={() => { setResult(null); setCode(""); }}>Sign in to another</Button>
         </div>
@@ -158,6 +176,20 @@ function AttendPage() {
                 Stop
               </Button>
             )}
+            <div className="mt-3 flex items-center justify-between rounded-xl border border-border/60 p-3">
+              <div className="text-sm font-medium">Auto-open camera</div>
+              <Switch
+                checked={autoCam}
+                onCheckedChange={(v) => {
+                  setAutoCam(v);
+                  try {
+                    localStorage.setItem("slams:auto-camera", v ? "1" : "0");
+                  } catch {
+                    /* ignore */
+                  }
+                }}
+              />
+            </div>
             <p className="mt-2 text-center text-xs text-muted-foreground">Point at the QR displayed by your lecturer.</p>
           </div>
         </div>

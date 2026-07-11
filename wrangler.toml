@@ -1,0 +1,16 @@
+name = "slams"
+main = "./.output/server/index.mjs"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Static assets built by Vite, served by Nitro's cloudflare_module worker.
+assets = { directory = "./.output/public", binding = "ASSETS" }
+
+# Cloudflare D1 database. Create it once with:
+#   wrangler d1 create slams
+# then paste the returned database_id below.
+[[d1_databases]]
+binding = "DB"
+database_name = "slams"
+database_id = "7ba50733-1f70-48ea-8d30-8c450e963c31"
+migrations_dir = "migrations"

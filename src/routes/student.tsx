@@ -1,12 +1,13 @@
 import { createFileRoute, redirect, Outlet } from "@tanstack/react-router";
 import { me } from "@/lib/api.functions";
 import { AppShell, type NavItem } from "@/components/AppShell";
-import { LayoutDashboard, QrCode, History } from "lucide-react";
+import { LayoutDashboard, QrCode, History, Settings } from "lucide-react";
 
 const nav: NavItem[] = [
   { to: "/student", label: "My Courses", icon: LayoutDashboard },
   { to: "/student/attend", label: "Sign In", icon: QrCode },
   { to: "/student/history", label: "History", icon: History },
+  { to: "/settings", label: "Settings", icon: Settings },
 ];
 
 export const Route = createFileRoute("/student")({

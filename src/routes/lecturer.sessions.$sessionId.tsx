@@ -1,15 +1,16 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { sessionDetail, endSession } from "@/lib/api.functions";
+import { sessionDetail, endSession, deleteAttendanceRecord } from "@/lib/api.functions";
 import { PageHeader } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Progress } from "@/components/ui/progress";
-import { ArrowLeft, Copy, StopCircle } from "lucide-react";
+import { ArrowLeft, Copy, StopCircle, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { toast } from "sonner";
+import { burstCelebrate } from "@/lib/confetti";
 
 export const Route = createFileRoute("/lecturer/sessions/$sessionId")({
   component: LiveSessionPage,
@@ -20,6 +21,7 @@ function LiveSessionPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const endFn = useServerFn(endSession);
+  const delFn = useServerFn(deleteAttendanceRecord);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const detailQ = useQuery({
@@ -54,8 +56,15 @@ function LiveSessionPage() {
 
   const end = async () => {
     await endFn({ data: { sessionId } });
+    burstCelebrate();
     toast.success("Session ended");
     qc.invalidateQueries();
+  };
+
+  const removeRecord = async (recordId: string) => {
+    await delFn({ data: { recordId } });
+    toast.success("Attendance removed");
+    qc.invalidateQueries({ queryKey: ["session-detail", sessionId] });
   };
 
   return (
@@ -82,12 +91,14 @@ function LiveSessionPage() {
             <span className="font-mono text-lg text-foreground">{isOpen ? `${mm}:${ss}` : "—"}</span>
           </div>
           <div className={`mt-6 flex justify-center ${isOpen ? "animate-pulse-ring rounded-3xl" : "opacity-60"}`}>
-            <canvas ref={canvasRef} className="rounded-2xl bg-white p-3 shadow-elegant" />
+            <div className="rounded-3xl bg-gradient-to-br from-primary/30 via-accent/20 to-primary/30 p-1.5 shadow-glow">
+              <canvas ref={canvasRef} className="rounded-2xl bg-white p-3" />
+            </div>
           </div>
           <div className="mt-6 grid grid-cols-2 gap-3">
             <div className="rounded-xl bg-muted/60 p-3 text-center">
               <div className="text-xs text-muted-foreground">One-time code</div>
-              <div className="mt-1 font-mono text-2xl font-semibold tracking-widest">{s.code}</div>
+              <div className="mt-1 font-mono text-2xl font-semibold tracking-widest gradient-text">{s.code}</div>
             </div>
             <div className="rounded-xl bg-muted/60 p-3 text-center">
               <div className="text-xs text-muted-foreground">Signed in</div>
@@ -119,6 +130,7 @@ function LiveSessionPage() {
                   <TableHead>Student</TableHead>
                   <TableHead>Matric</TableHead>
                   <TableHead className="text-right">Time</TableHead>
+                  <TableHead className="w-10" />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -128,10 +140,15 @@ function LiveSessionPage() {
                     <TableCell className="font-medium">{a.name}</TableCell>
                     <TableCell className="font-mono text-xs">{a.matricNo}</TableCell>
                     <TableCell className="text-right font-mono text-xs">{new Date(a.timestamp).toLocaleTimeString()}</TableCell>
+                    <TableCell className="text-right">
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => removeRecord(a.id)} title="Remove attendance">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
                 {attendance.length === 0 && (
-                  <TableRow><TableCell colSpan={4} className="py-10 text-center text-muted-foreground">Waiting for the first sign-in…</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground">Waiting for the first sign-in…</TableCell></TableRow>
                 )}
               </TableBody>
             </Table>

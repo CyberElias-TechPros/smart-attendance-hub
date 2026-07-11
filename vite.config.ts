@@ -12,4 +12,11 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
+  // Cloudflare Workers target (enabled by the bundled nitro preset).
+  nitro: {
+    cloudflare: {
+      // Enable Node.js compatibility so Web/Node crypto (PBKDF2, btoa/atob) work at runtime.
+      nodeCompat: true,
+    },
+  },
 });

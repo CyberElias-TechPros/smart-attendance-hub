@@ -11,7 +11,24 @@ import {
   Users,
   BookOpen,
   CheckCircle2,
+  Sparkles,
+  Star,
 } from "lucide-react";
+import { AuroraBackground, Orb } from "@/components/Background";
+import { AnimatedNumber } from "@/components/AnimatedNumber";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { Avatar } from "@/components/Avatar";
+import { RouteTransition } from "@/components/RouteTransition";
+import { useSiteSettings } from "@/lib/useSiteSettings";
+
+const DEFAULT_MARQUEE = [
+  "Faculty of Science",
+  "Faculty of Engineering",
+  "Faculty of Arts",
+  "Business School",
+  "College of Medicine",
+  "School of Computing",
+];
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -28,39 +45,52 @@ export const Route = createFileRoute("/")({
 });
 
 function Landing() {
+  const { data: settings } = useSiteSettings();
+  const institution = settings?.institutionName ?? "SLAMS";
   return (
     <div className="min-h-screen">
-      <Header />
-      <Hero />
-      <LogosBar />
-      <Features />
-      <HowItWorks />
-      <Roles />
-      <CTA />
-      <Footer />
+      <Header institutionName={institution} />
+      <RouteTransition>
+        <Hero showFakeStats={settings?.showFakeStats ?? true} />
+      </RouteTransition>
+      <LogoMarquee items={settings?.marqueeItems} />
+      <RouteTransition>
+        <Features />
+      </RouteTransition>
+      <RouteTransition>
+        <HowItWorks />
+      </RouteTransition>
+      <RouteTransition>
+        <Roles />
+      </RouteTransition>
+      <Testimonials testimonials={settings?.testimonials} />
+      <CTA settings={settings} />
+      <Footer institutionName={institution} />
     </div>
   );
 }
 
-function Header() {
+function Header({ institutionName }: { institutionName: string }) {
   return (
     <header className="sticky top-0 z-40 border-b border-border/60 bg-background/70 backdrop-blur-xl">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
         <Link to="/" className="flex items-center gap-2">
-          <div className="grid h-8 w-8 place-items-center rounded-lg bg-primary text-primary-foreground shadow-elegant">
+          <div className="grid h-8 w-8 place-items-center rounded-lg bg-primary-gradient text-primary-foreground shadow-glow">
             <GraduationCap className="h-4 w-4" />
           </div>
-          <span className="font-display text-lg font-semibold tracking-tight">SLAMS</span>
+          <span className="font-display text-lg font-semibold tracking-tight">{institutionName}</span>
         </Link>
         <nav className="hidden items-center gap-8 text-sm md:flex">
-          <a href="#features" className="text-muted-foreground hover:text-foreground">Features</a>
-          <a href="#how" className="text-muted-foreground hover:text-foreground">How it works</a>
-          <a href="#roles" className="text-muted-foreground hover:text-foreground">For</a>
+          <a href="#features" className="text-muted-foreground transition hover:text-foreground">Features</a>
+          <a href="#how" className="text-muted-foreground transition hover:text-foreground">How it works</a>
+          <a href="#roles" className="text-muted-foreground transition hover:text-foreground">For</a>
+          <a href="#testimonials" className="text-muted-foreground transition hover:text-foreground">Stories</a>
         </nav>
         <div className="flex items-center gap-2">
+          <ThemeToggle />
           <Link
             to="/login"
-            className="rounded-md px-3 py-1.5 text-sm font-medium text-foreground hover:bg-accent/40"
+            className="rounded-md px-3 py-1.5 text-sm font-medium text-foreground transition hover:bg-accent/40"
           >
             Sign in
           </Link>
@@ -76,26 +106,28 @@ function Header() {
   );
 }
 
-function Hero() {
+function Hero({ showFakeStats }: { showFakeStats: boolean }) {
   return (
-    <section className="relative overflow-hidden bg-hero-gradient">
-      <div className="mx-auto grid max-w-6xl gap-14 px-6 py-20 md:grid-cols-2 md:py-28">
+    <AuroraBackground className="bg-hero-gradient">
+      <section className="relative mx-auto grid max-w-6xl items-center gap-16 px-6 py-20 md:grid-cols-2 md:py-28">
+        <Orb className="left-[-6rem] top-[-4rem] h-72 w-72" />
+        <Orb className="right-[20%] top-[30%] h-56 w-56" color="oklch(0.7 0.15 200 / 0.35)" />
         <div className="animate-fade-up">
           <span className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-background/60 px-3 py-1 text-xs font-medium text-muted-foreground backdrop-blur">
-            <span className="h-1.5 w-1.5 rounded-full bg-success" />
+            <span className="h-1.5 w-1.5 animate-blink rounded-full bg-success" />
             Live attendance in 30 seconds
           </span>
           <h1 className="mt-5 text-balance font-display text-5xl font-bold leading-[1.05] tracking-tight text-foreground md:text-6xl">
-            Retire the paper attendance sheet.
+            Retire the <span className="gradient-text">paper attendance</span> sheet.
           </h1>
           <p className="mt-5 max-w-lg text-balance text-lg text-muted-foreground">
-            SLAMS turns any lecture hall into a secure, digital attendance loop —
-            unique QR codes, GPS verification, and automatic percentages, without spreadsheets.
+            SLAMS turns any lecture hall into a secure, digital attendance loop — unique QR
+            codes, GPS verification, and automatic percentages, without spreadsheets.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
             <Link
               to="/login"
-              className="group inline-flex items-center gap-2 rounded-md bg-primary px-5 py-3 text-sm font-medium text-primary-foreground shadow-elegant transition hover:bg-primary/90"
+              className="group inline-flex items-center gap-2 rounded-md bg-primary px-5 py-3 text-sm font-medium text-primary-foreground shadow-glow transition hover:bg-primary/90"
             >
               Launch dashboard
               <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
@@ -108,13 +140,32 @@ function Hero() {
             </a>
           </div>
           <dl className="mt-10 grid grid-cols-3 gap-6 border-t border-border/60 pt-6 text-sm">
-            <div><dt className="text-muted-foreground">Sign-in time</dt><dd className="mt-1 font-display text-xl font-semibold">~4s</dd></div>
-            <div><dt className="text-muted-foreground">Fraud attempts blocked</dt><dd className="mt-1 font-display text-xl font-semibold">100%</dd></div>
-            <div><dt className="text-muted-foreground">Report formats</dt><dd className="mt-1 font-display text-xl font-semibold">PDF · XLSX</dd></div>
+            {showFakeStats && (
+              <div>
+                <dt className="text-muted-foreground">Sign-in time</dt>
+                <dd className="mt-1 font-display text-xl font-semibold">
+                  <AnimatedNumber value={4} format={(n) => `~${Math.round(n)}s`} />
+                </dd>
+              </div>
+            )}
+            {showFakeStats && (
+              <div>
+                <dt className="text-muted-foreground">Fraud blocked</dt>
+                <dd className="mt-1 font-display text-xl font-semibold">
+                  <AnimatedNumber value={100} format={(n) => `${Math.round(n)}%`} />
+                </dd>
+              </div>
+            )}
+            <div>
+              <dt className="text-muted-foreground">Report formats</dt>
+              <dd className="mt-1 font-display text-xl font-semibold">PDF · XLSX</dd>
+            </div>
           </dl>
         </div>
+
         <div className="relative animate-fade-up">
-          <div className="relative rounded-3xl border border-border/70 bg-card p-6 shadow-lift">
+          <Orb className="left-1/2 top-1/2 h-64 w-64 -translate-x-1/2 -translate-y-1/2" color="oklch(0.78 0.14 90 / 0.3)" />
+          <div className="relative rounded-3xl border border-border/70 bg-card/80 p-6 shadow-lift backdrop-blur-xl">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span className="font-mono uppercase tracking-widest">Live session</span>
               <span className="inline-flex items-center gap-1.5 rounded-full bg-success/10 px-2 py-0.5 font-medium text-success">
@@ -125,18 +176,16 @@ function Hero() {
               <div className="font-display text-2xl font-semibold">CSC 305 · Data Structures</div>
               <div className="text-sm text-muted-foreground">Hall B · Mon 10:00 – 11:00</div>
             </div>
-            <div className="mt-6 flex items-center justify-center">
-              <div className="grid h-52 w-52 place-items-center rounded-2xl bg-foreground p-4 shadow-elegant">
-                <div className="grid h-full w-full grid-cols-12 grid-rows-12 gap-[2px]">
+            <div className="relative mt-6 flex items-center justify-center">
+              <div className="relative rounded-2xl bg-foreground p-4 shadow-elegant">
+                <div className="grid h-44 w-44 grid-cols-12 grid-rows-12 gap-[2px]">
                   {Array.from({ length: 144 }).map((_, i) => {
                     const on = ((i * 73) ^ (i * 11)) % 3 !== 0;
-                    return (
-                      <span
-                        key={i}
-                        className={on ? "bg-background rounded-[1px]" : ""}
-                      />
-                    );
+                    return <span key={i} className={on ? "rounded-[1px] bg-background" : ""} />;
                   })}
+                </div>
+                <div className="absolute -right-3 -top-3 grid h-9 w-9 animate-float place-items-center rounded-full bg-accent text-accent-foreground shadow-elegant">
+                  <QrCode className="h-4 w-4" />
                 </div>
               </div>
             </div>
@@ -167,20 +216,28 @@ function Hero() {
             </div>
           </div>
         </div>
-      </div>
-    </section>
+      </section>
+    </AuroraBackground>
   );
 }
 
-function LogosBar() {
-  const items = ["Faculty of Science", "Faculty of Engineering", "Faculty of Arts", "Business School", "College of Medicine"];
+function LogoMarquee({ items }: { items?: string[] }) {
+  const list = items && items.length > 0 ? items : DEFAULT_MARQUEE;
   return (
     <div className="border-y border-border/60 bg-background/60">
-      <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-center gap-x-10 gap-y-3 px-6 py-6 text-xs uppercase tracking-widest text-muted-foreground">
-        <span>Trusted by faculties running SLAMS</span>
-        {items.map((i) => (
-          <span key={i} className="font-medium">{i}</span>
-        ))}
+      <div className="mx-auto max-w-6xl px-6 py-6">
+        <p className="text-center text-xs uppercase tracking-[0.25em] text-muted-foreground">
+          Trusted by faculties running SLAMS
+        </p>
+        <div className="relative mt-4 overflow-hidden [mask-image:linear-gradient(to_right,transparent,black_12%,black_88%,transparent)]">
+          <div className="flex w-max animate-marquee gap-10">
+            {[...items, ...items].map((i, idx) => (
+              <span key={idx} className="whitespace-nowrap font-display text-sm font-medium text-muted-foreground/80">
+                {i}
+              </span>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -188,7 +245,7 @@ function LogosBar() {
 
 function Features() {
   const features = [
-    { icon: QrCode, title: "One-time QR codes", body: "Each session generates a unique code that expires automatically. Screenshots become useless." },
+    { icon: QrCode, title: "One-time QR codes", body: "Each session generates a unique code that expires automatically — a fresh code every time, so a reused screenshot won't validate." },
     { icon: MapPin, title: "GPS verification", body: "Optional geo-fence ensures students are inside the lecture venue before their sign-in is accepted." },
     { icon: ShieldCheck, title: "Duplicate blocked", body: "One student, one sign-in per session — enforced at the database level, not by trust." },
     { icon: BarChart3, title: "Live analytics", body: "Watch the attendance curve build during the lecture and drill down by student in real time." },
@@ -198,14 +255,21 @@ function Features() {
   return (
     <section id="features" className="mx-auto max-w-6xl px-6 py-24">
       <div className="max-w-2xl">
-        <p className="text-xs font-medium uppercase tracking-[0.25em] text-primary">Platform</p>
-        <h2 className="mt-3 font-display text-4xl font-semibold tracking-tight">Everything a modern faculty needs.</h2>
+        <p className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1 text-xs font-medium uppercase tracking-[0.2em] text-primary">
+          <Sparkles className="h-3 w-3" /> Platform
+        </p>
+        <h2 className="mt-4 font-display text-4xl font-semibold tracking-tight">Everything a modern faculty needs.</h2>
         <p className="mt-3 text-muted-foreground">Purpose-built for high-frequency lectures, large cohorts, and the messy reality of shared halls.</p>
       </div>
       <div className="mt-12 grid gap-4 md:grid-cols-3">
-        {features.map((f) => (
-          <div key={f.title} className="group rounded-2xl border border-border/70 bg-card p-6 transition hover:-translate-y-0.5 hover:shadow-lift">
-            <div className="grid h-10 w-10 place-items-center rounded-xl bg-primary/10 text-primary transition group-hover:bg-primary group-hover:text-primary-foreground">
+        {features.map((f, i) => (
+          <div
+            key={f.title}
+            className="group relative overflow-hidden rounded-2xl border border-border/70 bg-card p-6 transition duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-lift"
+            style={{ animationDelay: `${i * 60}ms` }}
+          >
+            <div className="absolute -right-8 -top-8 h-24 w-24 rounded-full bg-primary/5 blur-2xl transition group-hover:bg-primary/15" />
+            <div className="grid h-11 w-11 place-items-center rounded-xl bg-primary/10 text-primary transition group-hover:bg-primary group-hover:text-primary-foreground">
               <f.icon className="h-5 w-5" />
             </div>
             <h3 className="mt-4 font-display text-lg font-semibold">{f.title}</h3>
@@ -224,23 +288,26 @@ function HowItWorks() {
     { n: "03", t: "Session closes", d: "Attendance is frozen. Percentages recompute instantly across the semester." },
   ];
   return (
-    <section id="how" className="border-y border-border/60 bg-secondary/40">
+    <section id="how" className="relative border-y border-border/60 bg-secondary/40">
       <div className="mx-auto max-w-6xl px-6 py-24">
-        <div className="flex items-end justify-between">
-          <div>
-            <p className="text-xs font-medium uppercase tracking-[0.25em] text-primary">Workflow</p>
-            <h2 className="mt-3 font-display text-4xl font-semibold tracking-tight">A lecture in three moves.</h2>
-          </div>
+        <div className="max-w-2xl">
+          <p className="text-xs font-medium uppercase tracking-[0.25em] text-primary">Workflow</p>
+          <h2 className="mt-3 font-display text-4xl font-semibold tracking-tight">A lecture in three moves.</h2>
         </div>
-        <ol className="mt-12 grid gap-6 md:grid-cols-3">
+        <div className="relative mt-12 grid gap-6 md:grid-cols-3">
+          <div aria-hidden className="absolute left-0 right-0 top-9 hidden h-px bg-gradient-to-r from-primary/40 via-primary/20 to-transparent md:block" />
           {steps.map((s) => (
-            <li key={s.n} className="relative rounded-2xl border border-border/70 bg-card p-6">
-              <span className="font-mono text-xs text-muted-foreground">{s.n}</span>
-              <h3 className="mt-2 font-display text-xl font-semibold">{s.t}</h3>
+            <div key={s.n} className="relative">
+              <div className="flex items-center gap-3">
+                <div className="grid h-12 w-12 place-items-center rounded-2xl bg-primary-gradient font-display text-lg font-bold text-primary-foreground shadow-glow">
+                  {s.n}
+                </div>
+              </div>
+              <h3 className="mt-4 font-display text-xl font-semibold">{s.t}</h3>
               <p className="mt-2 text-sm text-muted-foreground">{s.d}</p>
-            </li>
+            </div>
           ))}
-        </ol>
+        </div>
       </div>
     </section>
   );
@@ -259,9 +326,13 @@ function Roles() {
         <h2 className="mt-3 font-display text-4xl font-semibold tracking-tight">Every role in the faculty.</h2>
       </div>
       <div className="mt-12 grid gap-4 md:grid-cols-3">
-        {roles.map((r) => (
-          <div key={r.t} className="rounded-2xl border border-border/70 bg-card p-6">
-            <div className="grid h-10 w-10 place-items-center rounded-xl bg-accent/20 text-accent-foreground">
+        {roles.map((r, i) => (
+          <div
+            key={r.t}
+            className="relative overflow-hidden rounded-2xl border border-border/70 bg-card p-6 transition duration-300 hover:-translate-y-1 hover:shadow-lift"
+            style={{ animationDelay: `${i * 80}ms` }}
+          >
+            <div className="grid h-11 w-11 place-items-center rounded-xl bg-accent/20 text-accent-foreground">
               <r.icon className="h-5 w-5" />
             </div>
             <h3 className="mt-4 font-display text-lg font-semibold">{r.t}</h3>
@@ -280,17 +351,61 @@ function Roles() {
   );
 }
 
-function CTA() {
+function Testimonials({ testimonials }: { testimonials?: { name: string; role: string; text: string }[] }) {
+  if (!testimonials || testimonials.length === 0) return null;
+  const items = testimonials;
+  return (
+    <section id="testimonials" className="border-y border-border/60 bg-secondary/40">
+      <div className="mx-auto max-w-6xl px-6 py-24">
+        <h2 className="font-display text-3xl font-semibold tracking-tight">Loved by lecturers and students alike.</h2>
+        <div className="mt-10 grid gap-4 md:grid-cols-3">
+          {items.map((t) => (
+            <figure key={t.name} className="flex flex-col rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
+              <div className="flex gap-0.5 text-accent">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Star key={i} className="h-4 w-4 fill-current" />
+                ))}
+              </div>
+              <blockquote className="mt-4 flex-1 text-sm text-foreground/90">“{t.text}”</blockquote>
+              <figcaption className="mt-5 flex items-center gap-3">
+                <Avatar name={t.name} seed={t.name} size="sm" />
+                <div>
+                  <div className="text-sm font-medium">{t.name}</div>
+                  <div className="text-xs text-muted-foreground">{t.role}</div>
+                </div>
+              </figcaption>
+            </figure>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function CTA({ settings }: { settings?: { demoAccountsEnabled?: boolean; demoPassword?: string; demoEmailDomain?: string; institutionName?: string } }) {
+  const domain = settings?.demoEmailDomain ?? "slams.edu";
+  const pw = settings?.demoPassword ?? "password123";
+  const demoOn = settings?.demoAccountsEnabled ?? true;
+  const institution = settings?.institutionName ?? "SLAMS";
+  const demos = [
+    { r: "Admin", e: `admin@${domain}` },
+    { r: "Lecturer", e: `lecturer@${domain}` },
+    { r: "Student", e: `student@${domain}` },
+  ];
   return (
     <section className="mx-auto max-w-6xl px-6 pb-24">
-      <div className="relative overflow-hidden rounded-3xl bg-primary p-10 text-primary-foreground shadow-lift md:p-14">
-        <div className="absolute inset-0 opacity-30 [background:radial-gradient(600px_300px_at_10%_20%,oklch(0.9_0.08_80/.45),transparent)]" />
+      <AuroraBackground className="relative overflow-hidden rounded-3xl bg-primary p-10 text-primary-foreground shadow-lift md:p-14">
+        <div className="absolute inset-0 bg-noise opacity-[0.04] mix-blend-overlay" />
         <div className="relative flex flex-col items-start justify-between gap-6 md:flex-row md:items-end">
           <div className="max-w-xl">
             <h2 className="font-display text-3xl font-semibold tracking-tight md:text-4xl">
-              Ready to run your next lecture on SLAMS?
+              Ready to run your next lecture on {institution}?
             </h2>
-            <p className="mt-2 text-primary-foreground/80">Sign in with any of the demo roles below to explore the full workflow.</p>
+            <p className="mt-2 text-primary-foreground/80">
+              {demoOn
+                ? "Sign in with any of the demo roles below to explore the full workflow."
+                : "Sign in to explore the full attendance workflow."}
+            </p>
           </div>
           <Link
             to="/login"
@@ -299,33 +414,31 @@ function CTA() {
             Open dashboard <ArrowRight className="h-4 w-4" />
           </Link>
         </div>
-        <div className="relative mt-8 grid gap-3 text-sm sm:grid-cols-3">
-          {[
-            { r: "Admin", e: "admin@slams.edu" },
-            { r: "Lecturer", e: "lecturer@slams.edu" },
-            { r: "Student", e: "student@slams.edu" },
-          ].map((x) => (
-            <div key={x.r} className="rounded-xl bg-background/10 p-3 backdrop-blur">
-              <div className="text-xs uppercase tracking-widest text-primary-foreground/70">{x.r}</div>
-              <div className="mt-1 font-mono">{x.e}</div>
-              <div className="text-xs text-primary-foreground/70">password: password123</div>
-            </div>
-          ))}
-        </div>
-      </div>
+        {demoOn && (
+          <div className="relative mt-8 grid gap-3 text-sm sm:grid-cols-3">
+            {demos.map((x) => (
+              <div key={x.r} className="rounded-xl bg-background/10 p-3 backdrop-blur">
+                <div className="text-xs uppercase tracking-widest text-primary-foreground/70">{x.r}</div>
+                <div className="mt-1 font-mono">{x.e}</div>
+                <div className="text-xs text-primary-foreground/70">password: {pw}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </AuroraBackground>
     </section>
   );
 }
 
-function Footer() {
+function Footer({ institutionName }: { institutionName: string }) {
   return (
     <footer className="border-t border-border/60 bg-background/60">
       <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-6 py-8 text-xs text-muted-foreground md:flex-row">
         <div className="flex items-center gap-2">
           <GraduationCap className="h-4 w-4" />
-          <span>SLAMS · Smart Lecture Attendance Management System</span>
+          <span>{institutionName} · Smart Lecture Attendance Management System</span>
         </div>
-        <div>© {new Date().getFullYear()} SLAMS. Built for universities.</div>
+        <div>© {new Date().getFullYear()} {institutionName}. Built for universities.</div>
       </div>
     </footer>
   );

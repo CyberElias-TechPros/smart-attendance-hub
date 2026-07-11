@@ -31,15 +31,11 @@ export const login = createServerFn({ method: "POST" })
     z.object({ email: z.string().email(), password: z.string().min(1) }).parse(d),
   )
   .handler(async ({ data }) => {
-    const { ensureSeeded, db } = await import("./db.server");
-    const { verifyPassword, signSession, buildSessionCookie } = await import("./auth.server");
-    await ensureSeeded();
-    const user = [...db().users.values()].find(
-      (u) => u.email.toLowerCase() === data.email.toLowerCase(),
-    );
+    const { getRepo } = await import("./db.server");
+    const { signSession, buildSessionCookie } = await import("./auth.server");
+    const repo = await getRepo();
+    const user = await repo.verifyCredentials(data.email, data.password);
     if (!user) throw new Error("Invalid email or password");
-    const ok = await verifyPassword(data.password, user.passwordHash);
-    if (!ok) throw new Error("Invalid email or password");
     const token = await signSession({ sub: user.id, role: user.role, name: user.name });
     setResponseHeader("set-cookie", buildSessionCookie(token));
     return { id: user.id, name: user.name, role: user.role, email: user.email };
@@ -52,15 +48,13 @@ export const logout = createServerFn({ method: "POST" }).handler(async () => {
 });
 
 export const me = createServerFn({ method: "GET" }).handler(async () => {
-  const { ensureSeeded, db } = await import("./db.server");
-  await ensureSeeded();
+  const { getRepo } = await import("./db.server");
+  const repo = await getRepo();
   const sess = await currentSession();
   if (!sess) return null;
-  const u = db().users.get(sess.sub);
+  const u = await repo.getUser(sess.sub);
   if (!u) return null;
-  const { passwordHash, ...rest } = u;
-  void passwordHash;
-  return rest;
+  return u;
 });
 
 // ─── ADMIN: users ────────────────────────────────────────────────────────
@@ -71,11 +65,9 @@ export const listUsers = createServerFn({ method: "GET" })
   )
   .handler(async ({ data }) => {
     await requireUser(["admin"]);
-    const { db } = await import("./db.server");
-    return [...db().users.values()]
-      .filter((u) => (data?.role ? u.role === data.role : true))
-      .map(({ passwordHash: _p, ...u }) => u)
-      .sort((a, b) => a.name.localeCompare(b.name));
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    return repo.listUsers(data?.role);
   });
 
 const createStudentSchema = z.object({
@@ -90,24 +82,11 @@ export const createStudent = createServerFn({ method: "POST" })
   .inputValidator((d: z.input<typeof createStudentSchema>) => createStudentSchema.parse(d))
   .handler(async ({ data }) => {
     await requireUser(["admin"]);
-    const { db } = await import("./db.server");
-    const { hashPassword } = await import("./auth.server");
-    if ([...db().users.values()].some((u) => u.email.toLowerCase() === data.email.toLowerCase()))
-      throw new Error("Email already in use");
-    const { nanoid } = await import("nanoid");
-    const u = {
-      id: nanoid(10),
-      email: data.email,
-      passwordHash: await hashPassword(data.password),
-      name: data.name,
-      role: "student" as const,
-      matricNo: data.matricNo,
-      departmentId: data.departmentId,
-      level: data.level,
-      createdAt: Date.now(),
-    };
-    db().users.set(u.id, u);
-    return { id: u.id };
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    if (await repo.emailExists(data.email)) throw new Error("Email already in use");
+    const id = await repo.createUser({ ...data, role: "student" });
+    return { id };
   });
 
 const createLecturerSchema = z.object({
@@ -121,75 +100,123 @@ export const createLecturer = createServerFn({ method: "POST" })
   .inputValidator((d: z.input<typeof createLecturerSchema>) => createLecturerSchema.parse(d))
   .handler(async ({ data }) => {
     await requireUser(["admin"]);
-    const { db } = await import("./db.server");
-    const { hashPassword } = await import("./auth.server");
-    if ([...db().users.values()].some((u) => u.email.toLowerCase() === data.email.toLowerCase()))
-      throw new Error("Email already in use");
-    const { nanoid } = await import("nanoid");
-    const u = {
-      id: nanoid(10),
-      email: data.email,
-      passwordHash: await hashPassword(data.password),
-      name: data.name,
-      role: "lecturer" as const,
-      staffId: data.staffId,
-      departmentId: data.departmentId,
-      createdAt: Date.now(),
-    };
-    db().users.set(u.id, u);
-    return { id: u.id };
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    if (await repo.emailExists(data.email)) throw new Error("Email already in use");
+    const id = await repo.createUser({ ...data, role: "lecturer" });
+    return { id };
   });
 
 export const deleteUser = createServerFn({ method: "POST" })
   .inputValidator((d: { id: string }) => z.object({ id: z.string() }).parse(d))
   .handler(async ({ data }) => {
     await requireUser(["admin"]);
-    const { db } = await import("./db.server");
-    db().users.delete(data.id);
-    // remove from course enrollments
-    for (const c of db().courses.values()) {
-      c.enrolledStudentIds = c.enrolledStudentIds.filter((s) => s !== data.id);
-      if (c.lecturerId === data.id) c.lecturerId = undefined;
-    }
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    await repo.deleteUser(data.id);
+    return { ok: true };
+  });
+
+const updateStudentSchema = z.object({
+  id: z.string(),
+  name: z.string().min(2).max(120),
+  email: z.string().email(),
+  matricNo: z.string().min(2).max(40),
+  departmentId: z.string().min(1),
+  level: z.string().min(1),
+  password: z.string().min(6).optional(),
+});
+export const updateStudent = createServerFn({ method: "POST" })
+  .inputValidator((d: z.input<typeof updateStudentSchema>) => updateStudentSchema.parse(d))
+  .handler(async ({ data }) => {
+    await requireUser(["admin"]);
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    const { id, ...rest } = data;
+    await repo.updateStudent(id, rest);
+    return { ok: true };
+  });
+
+const updateLecturerSchema = z.object({
+  id: z.string(),
+  name: z.string().min(2).max(120),
+  email: z.string().email(),
+  staffId: z.string().min(2).max(40),
+  departmentId: z.string().min(1),
+  password: z.string().min(6).optional(),
+});
+export const updateLecturer = createServerFn({ method: "POST" })
+  .inputValidator((d: z.input<typeof updateLecturerSchema>) => updateLecturerSchema.parse(d))
+  .handler(async ({ data }) => {
+    await requireUser(["admin"]);
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    const { id, ...rest } = data;
+    await repo.updateLecturer(id, rest);
+    return { ok: true };
+  });
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(6).max(128),
+});
+export const changePassword = createServerFn({ method: "POST" })
+  .inputValidator((d: z.input<typeof changePasswordSchema>) => changePasswordSchema.parse(d))
+  .handler(async ({ data }) => {
+    const sess = await requireUser();
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    await repo.changePassword(sess.sub, data.currentPassword, data.newPassword);
     return { ok: true };
   });
 
 // ─── DEPARTMENTS ──────────────────────────────────────────────────────────
 
 export const listDepartments = createServerFn({ method: "GET" }).handler(async () => {
-  const { ensureSeeded, db } = await import("./db.server");
-  await ensureSeeded();
-  return [...db().departments.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const { getRepo } = await import("./db.server");
+  const repo = await getRepo();
+  return repo.listDepartments();
 });
 
 export const createDepartment = createServerFn({ method: "POST" })
-  .inputValidator((d: { name: string; code: string }) =>
-    z.object({ name: z.string().min(2), code: z.string().min(2).max(10) }).parse(d),
+  .inputValidator((d: { name: string; code: string; icon?: string; color?: string }) =>
+    z.object({ name: z.string().min(2), code: z.string().min(2).max(10), icon: z.string().optional(), color: z.string().optional() }).parse(d),
   )
   .handler(async ({ data }) => {
     await requireUser(["admin"]);
-    const { db } = await import("./db.server");
-    const { nanoid } = await import("nanoid");
-    const dept = { id: nanoid(8), name: data.name, code: data.code.toUpperCase() };
-    db().departments.set(dept.id, dept);
-    return dept;
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    return repo.createDepartment(data.name, data.code, data.icon, data.color);
   });
 
 export const deleteDepartment = createServerFn({ method: "POST" })
   .inputValidator((d: { id: string }) => z.object({ id: z.string() }).parse(d))
   .handler(async ({ data }) => {
     await requireUser(["admin"]);
-    const { db } = await import("./db.server");
-    db().departments.delete(data.id);
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    await repo.deleteDepartment(data.id);
+    return { ok: true };
+  });
+
+export const updateDepartment = createServerFn({ method: "POST" })
+  .inputValidator((d: { id: string; name: string; code: string; icon?: string; color?: string }) =>
+    z.object({ id: z.string(), name: z.string().min(2), code: z.string().min(2).max(10), icon: z.string().optional(), color: z.string().optional() }).parse(d),
+  )
+  .handler(async ({ data }) => {
+    await requireUser(["admin"]);
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    await repo.updateDepartment(data.id, data.name, data.code, data.icon, data.color);
     return { ok: true };
   });
 
 // ─── COURSES ──────────────────────────────────────────────────────────────
 
 export const listCourses = createServerFn({ method: "GET" }).handler(async () => {
-  const { ensureSeeded, db } = await import("./db.server");
-  await ensureSeeded();
-  return [...db().courses.values()].sort((a, b) => a.code.localeCompare(b.code));
+  const { getRepo } = await import("./db.server");
+  const repo = await getRepo();
+  return repo.listCourses();
 });
 
 const createCourseSchema = z.object({
@@ -198,24 +225,18 @@ const createCourseSchema = z.object({
   departmentId: z.string().min(1),
   level: z.string().min(1),
   units: z.number().min(1).max(12),
+  icon: z.string().optional(),
+  color: z.string().optional(),
+  category: z.string().optional(),
+  description: z.string().optional(),
 });
 export const createCourse = createServerFn({ method: "POST" })
   .inputValidator((d: z.input<typeof createCourseSchema>) => createCourseSchema.parse(d))
   .handler(async ({ data }) => {
     await requireUser(["admin"]);
-    const { db } = await import("./db.server");
-    const { nanoid } = await import("nanoid");
-    const c = {
-      id: nanoid(8),
-      code: data.code.toUpperCase(),
-      title: data.title,
-      departmentId: data.departmentId,
-      level: data.level,
-      units: data.units,
-      enrolledStudentIds: [] as string[],
-    };
-    db().courses.set(c.id, c);
-    return c;
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    return repo.createCourse(data);
   });
 
 export const assignLecturer = createServerFn({ method: "POST" })
@@ -224,10 +245,9 @@ export const assignLecturer = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     await requireUser(["admin"]);
-    const { db } = await import("./db.server");
-    const c = db().courses.get(data.courseId);
-    if (!c) throw new Error("Course not found");
-    c.lecturerId = data.lecturerId ?? undefined;
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    await repo.assignLecturer(data.courseId, data.lecturerId);
     return { ok: true };
   });
 
@@ -237,10 +257,9 @@ export const enrollStudents = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     await requireUser(["admin"]);
-    const { db } = await import("./db.server");
-    const c = db().courses.get(data.courseId);
-    if (!c) throw new Error("Course not found");
-    c.enrolledStudentIds = Array.from(new Set(data.studentIds));
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    await repo.setEnrollments(data.courseId, data.studentIds);
     return { ok: true };
   });
 
@@ -248,8 +267,32 @@ export const deleteCourse = createServerFn({ method: "POST" })
   .inputValidator((d: { id: string }) => z.object({ id: z.string() }).parse(d))
   .handler(async ({ data }) => {
     await requireUser(["admin"]);
-    const { db } = await import("./db.server");
-    db().courses.delete(data.id);
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    await repo.deleteCourse(data.id);
+    return { ok: true };
+  });
+
+const updateCourseSchema = z.object({
+  id: z.string(),
+  code: z.string().min(2),
+  title: z.string().min(2),
+  departmentId: z.string().min(1),
+  level: z.string().min(1),
+  units: z.number().min(1).max(12),
+  icon: z.string().optional(),
+  color: z.string().optional(),
+  category: z.string().optional(),
+  description: z.string().optional(),
+});
+export const updateCourse = createServerFn({ method: "POST" })
+  .inputValidator((d: z.input<typeof updateCourseSchema>) => updateCourseSchema.parse(d))
+  .handler(async ({ data }) => {
+    await requireUser(["admin"]);
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    const { id, ...rest } = data;
+    await repo.updateCourse(id, rest);
     return { ok: true };
   });
 
@@ -257,8 +300,9 @@ export const deleteCourse = createServerFn({ method: "POST" })
 
 export const lecturerCourses = createServerFn({ method: "GET" }).handler(async () => {
   const sess = await requireUser(["lecturer"]);
-  const { db } = await import("./db.server");
-  return [...db().courses.values()].filter((c) => c.lecturerId === sess.sub);
+  const { getRepo } = await import("./db.server");
+  const repo = await getRepo();
+  return repo.lecturerCourses(sess.sub);
 });
 
 const startSessionSchema = z.object({
@@ -273,106 +317,86 @@ export const startSession = createServerFn({ method: "POST" })
   .inputValidator((d: z.input<typeof startSessionSchema>) => startSessionSchema.parse(d))
   .handler(async ({ data }) => {
     const sess = await requireUser(["lecturer"]);
-    const { db, generateCode } = await import("./db.server");
-    const c = db().courses.get(data.courseId);
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    const c = await repo.getCourse(data.courseId);
     if (!c) throw new Error("Course not found");
     if (c.lecturerId !== sess.sub) throw new Error("Not your course");
-    const { nanoid } = await import("nanoid");
-    const now = Date.now();
-    const s = {
-      id: nanoid(10),
-      courseId: c.id,
-      lecturerId: sess.sub,
-      code: generateCode(),
-      startedAt: now,
-      expiresAt: now + data.durationMinutes * 60 * 1000,
-      topic: data.topic,
-      latitude: data.latitude,
-      longitude: data.longitude,
-      radiusMeters: data.radiusMeters,
-    };
-    db().sessions.set(s.id, s);
-    return s;
+    return repo.startSession({ ...data, lecturerId: sess.sub });
   });
 
 export const endSession = createServerFn({ method: "POST" })
   .inputValidator((d: { sessionId: string }) => z.object({ sessionId: z.string() }).parse(d))
   .handler(async ({ data }) => {
     const sess = await requireUser(["lecturer"]);
-    const { db } = await import("./db.server");
-    const s = db().sessions.get(data.sessionId);
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    const s = await repo.getSession(data.sessionId);
     if (!s) throw new Error("Session not found");
     if (s.lecturerId !== sess.sub) throw new Error("Not your session");
-    s.endedAt = Date.now();
+    await repo.endSession(data.sessionId);
+    return { ok: true };
+  });
+
+export const deleteAttendanceRecord = createServerFn({ method: "POST" })
+  .inputValidator((d: { recordId: string }) => z.object({ recordId: z.string() }).parse(d))
+  .handler(async ({ data }) => {
+    const sess = await requireUser(["lecturer", "admin"]);
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    // Lecturers may only delete records from their own sessions.
+    if (sess.role === "lecturer") {
+      const rec = await repo.getAttendanceRecord(data.recordId);
+      if (!rec) throw new Error("Record not found");
+      const session = await repo.getSession(rec.sessionId);
+      if (!session || session.lecturerId !== sess.sub) throw new Error("Not your session");
+    }
+    await repo.deleteAttendanceRecord(data.recordId);
     return { ok: true };
   });
 
 export const sessionDetail = createServerFn({ method: "GET" })
   .inputValidator((d: { sessionId: string }) => z.object({ sessionId: z.string() }).parse(d))
   .handler(async ({ data }) => {
-    const sess = await requireUser(["lecturer", "admin"]);
-    void sess;
-    const { db } = await import("./db.server");
-    const s = db().sessions.get(data.sessionId);
-    if (!s) throw new Error("Session not found");
-    const course = db().courses.get(s.courseId)!;
-    const attended = db().records.filter((r) => r.sessionId === s.id);
-    const studentMap = db().users;
-    return {
-      session: s,
-      course,
-      totalEnrolled: course.enrolledStudentIds.length,
-      attendance: attended
-        .map((r) => {
-          const st = studentMap.get(r.studentId);
-          return {
-            id: r.id,
-            studentId: r.studentId,
-            name: st?.name ?? "Unknown",
-            matricNo: st?.matricNo ?? "—",
-            timestamp: r.timestamp,
-          };
-        })
-        .sort((a, b) => a.timestamp - b.timestamp),
-    };
+    await requireUser(["lecturer", "admin"]);
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    const detail = await repo.sessionDetail(data.sessionId);
+    if (!detail) throw new Error("Session not found");
+    return detail;
   });
 
 export const lecturerSessionsFor = createServerFn({ method: "GET" })
   .inputValidator((d: { courseId: string }) => z.object({ courseId: z.string() }).parse(d))
   .handler(async ({ data }) => {
-    const sess = await requireUser(["lecturer", "admin"]);
-    void sess;
-    const { db } = await import("./db.server");
-    return [...db().sessions.values()]
-      .filter((s) => s.courseId === data.courseId)
-      .sort((a, b) => b.startedAt - a.startedAt);
+    await requireUser(["lecturer", "admin"]);
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    return repo.listSessionsForCourse(data.courseId);
   });
 
 // ─── STUDENT ─────────────────────────────────────────────────────────────
 
 export const studentCourses = createServerFn({ method: "GET" }).handler(async () => {
   const sess = await requireUser(["student"]);
-  const { db } = await import("./db.server");
-  const courses = [...db().courses.values()].filter((c) =>
-    c.enrolledStudentIds.includes(sess.sub),
-  );
-  return courses.map((c) => {
-    const lecturer = c.lecturerId ? db().users.get(c.lecturerId) : undefined;
-    const sessions = [...db().sessions.values()].filter((s) => s.courseId === c.id);
-    const total = sessions.length;
-    const attended = db().records.filter(
-      (r) => r.courseId === c.id && r.studentId === sess.sub,
-    ).length;
-    const percentage = total === 0 ? 0 : Math.round((attended / total) * 100);
-    return {
-      ...c,
-      lecturerName: lecturer?.name ?? "Unassigned",
-      totalSessions: total,
-      attendedSessions: attended,
-      percentage,
-    };
-  });
+  const { getRepo } = await import("./db.server");
+  const repo = await getRepo();
+  return repo.studentCourses(sess.sub);
 });
+
+export const studentCourseSessions = createServerFn({ method: "GET" })
+  .inputValidator((d: { courseId: string }) => z.object({ courseId: z.string() }).parse(d))
+  .handler(async ({ data }) => {
+    const sess = await requireUser(["student"]);
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    // Verify student is enrolled in this course
+    const courses = await repo.studentCourses(sess.sub);
+    if (!courses.find((c) => c.id === data.courseId)) {
+      throw new Error("Not enrolled in this course");
+    }
+    return repo.listSessionsForCourse(data.courseId);
+  });
 
 export const submitAttendance = createServerFn({ method: "POST" })
   .inputValidator((d: { code: string; latitude?: number; longitude?: number }) =>
@@ -386,69 +410,16 @@ export const submitAttendance = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     const sess = await requireUser(["student"]);
-    const { db, haversineMeters } = await import("./db.server");
-    const now = Date.now();
-    const s = [...db().sessions.values()].find(
-      (x) => x.code === data.code && !x.endedAt && x.expiresAt > now,
-    );
-    if (!s) throw new Error("Invalid or expired attendance code");
-    const course = db().courses.get(s.courseId);
-    if (!course) throw new Error("Course not found");
-    if (!course.enrolledStudentIds.includes(sess.sub))
-      throw new Error("You are not enrolled in this course");
-    if (
-      db().records.find((r) => r.sessionId === s.id && r.studentId === sess.sub)
-    )
-      throw new Error("Attendance already submitted for this session");
-    if (
-      s.latitude != null &&
-      s.longitude != null &&
-      s.radiusMeters != null
-    ) {
-      if (data.latitude == null || data.longitude == null)
-        throw new Error("Location required for this session");
-      const dist = haversineMeters(
-        { lat: s.latitude, lng: s.longitude },
-        { lat: data.latitude, lng: data.longitude },
-      );
-      if (dist > s.radiusMeters)
-        throw new Error(
-          `You are ${Math.round(dist)}m from the venue (max ${s.radiusMeters}m)`,
-        );
-    }
-    const { nanoid } = await import("nanoid");
-    const rec = {
-      id: nanoid(10),
-      sessionId: s.id,
-      studentId: sess.sub,
-      courseId: s.courseId,
-      timestamp: now,
-      latitude: data.latitude,
-      longitude: data.longitude,
-    };
-    db().records.push(rec);
-    return {
-      ok: true,
-      course: { code: course.code, title: course.title },
-      timestamp: now,
-    };
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    return repo.submitAttendance({ ...data, studentId: sess.sub });
   });
 
 export const studentHistory = createServerFn({ method: "GET" }).handler(async () => {
   const sess = await requireUser(["student"]);
-  const { db } = await import("./db.server");
-  const records = db()
-    .records.filter((r) => r.studentId === sess.sub)
-    .sort((a, b) => b.timestamp - a.timestamp);
-  return records.map((r) => {
-    const c = db().courses.get(r.courseId);
-    return {
-      id: r.id,
-      timestamp: r.timestamp,
-      courseCode: c?.code ?? "—",
-      courseTitle: c?.title ?? "—",
-    };
-  });
+  const { getRepo } = await import("./db.server");
+  const repo = await getRepo();
+  return repo.studentHistory(sess.sub);
 });
 
 // ─── REPORTS / ANALYTICS ─────────────────────────────────────────────────
@@ -457,75 +428,102 @@ export const courseReport = createServerFn({ method: "GET" })
   .inputValidator((d: { courseId: string }) => z.object({ courseId: z.string() }).parse(d))
   .handler(async ({ data }) => {
     await requireUser(["admin", "lecturer"]);
-    const { db } = await import("./db.server");
-    const c = db().courses.get(data.courseId);
-    if (!c) throw new Error("Course not found");
-    const sessions = [...db().sessions.values()].filter((s) => s.courseId === c.id);
-    const total = sessions.length;
-    const students = c.enrolledStudentIds.map((sid) => {
-      const s = db().users.get(sid);
-      const attended = db().records.filter((r) => r.courseId === c.id && r.studentId === sid).length;
-      const pct = total === 0 ? 0 : Math.round((attended / total) * 100);
-      return {
-        id: sid,
-        name: s?.name ?? "Unknown",
-        matricNo: s?.matricNo ?? "—",
-        attended,
-        percentage: pct,
-      };
-    });
-    return {
-      course: { id: c.id, code: c.code, title: c.title, level: c.level, units: c.units },
-      totalSessions: total,
-      sessions: sessions.sort((a, b) => a.startedAt - b.startedAt),
-      students: students.sort((a, b) => b.percentage - a.percentage),
-    };
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    const r = await repo.courseReport(data.courseId);
+    if (!r) throw new Error("Course not found");
+    return r;
   });
+
+export const facultyReport = createServerFn({ method: "GET" }).handler(async () => {
+  await requireUser(["admin"]);
+  const { getRepo } = await import("./db.server");
+  const repo = await getRepo();
+  return repo.facultyReport();
+});
 
 export const adminOverview = createServerFn({ method: "GET" }).handler(async () => {
   await requireUser(["admin"]);
-  const { db } = await import("./db.server");
-  const users = [...db().users.values()];
-  const courses = [...db().courses.values()];
-  const sessions = [...db().sessions.values()];
-  const records = db().records;
-  return {
-    counts: {
-      students: users.filter((u) => u.role === "student").length,
-      lecturers: users.filter((u) => u.role === "lecturer").length,
-      courses: courses.length,
-      departments: db().departments.size,
-      sessions: sessions.length,
-      attendance: records.length,
-    },
-    recentSessions: sessions
-      .sort((a, b) => b.startedAt - a.startedAt)
-      .slice(0, 8)
-      .map((s) => {
-        const c = courses.find((x) => x.id === s.courseId);
-        return {
-          id: s.id,
-          courseCode: c?.code ?? "—",
-          startedAt: s.startedAt,
-          endedAt: s.endedAt,
-          attended: records.filter((r) => r.sessionId === s.id).length,
-          enrolled: c?.enrolledStudentIds.length ?? 0,
-        };
-      }),
-    weeklyAttendance: (() => {
-      const day = 24 * 60 * 60 * 1000;
-      const now = Date.now();
-      const buckets: { label: string; count: number }[] = [];
-      for (let i = 6; i >= 0; i--) {
-        const start = now - i * day;
-        const d = new Date(start);
-        const label = d.toLocaleDateString("en", { weekday: "short" });
-        const count = records.filter(
-          (r) => r.timestamp >= start - day / 2 && r.timestamp <= start + day / 2,
-        ).length;
-        buckets.push({ label, count });
-      }
-      return buckets;
-    })(),
-  };
+  const { getRepo } = await import("./db.server");
+  const repo = await getRepo();
+  return repo.adminOverview();
 });
+
+// ─── SITE SETTINGS (branding) ───────────────────────────────────────────────
+
+export const getSiteSettings = createServerFn({ method: "GET" }).handler(async () => {
+  await requireUser();
+  const { getRepo } = await import("./db.server");
+  const repo = await getRepo();
+  return repo.getSiteSettings();
+});
+
+const siteSettingsSchema = z.object({
+  institutionName: z.string().min(1).optional(),
+  atRiskThreshold: z.number().min(0).max(100).optional(),
+  marqueeItems: z.array(z.string()).optional(),
+  testimonials: z
+    .array(z.object({ name: z.string(), role: z.string(), text: z.string() }))
+    .optional(),
+  demoAccountsEnabled: z.boolean().optional(),
+  demoPassword: z.string().optional(),
+  demoEmailDomain: z.string().optional(),
+  showFakeStats: z.boolean().optional(),
+  primaryColor: z.string().nullable().optional(),
+  contactEmail: z.string().nullable().optional(),
+});
+export const updateSiteSettings = createServerFn({ method: "POST" })
+  .inputValidator((d: z.input<typeof siteSettingsSchema>) => siteSettingsSchema.parse(d))
+  .handler(async ({ data }) => {
+    await requireUser(["admin"]);
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    return repo.saveSiteSettings(data);
+  });
+
+// ─── STUDENT: open sessions ─────────────────────────────────────────────────
+
+export const listOpenSessionsForStudent = createServerFn({ method: "GET" }).handler(async () => {
+  const sess = await requireUser(["student"]);
+  const { getRepo } = await import("./db.server");
+  const repo = await getRepo();
+  return repo.listOpenSessionsForStudent(sess.sub);
+});
+
+// ─── SELF PROFILE UPDATE (per-user settings) ───────────────────────────────
+
+const updateProfileSchema = z.object({
+  name: z.string().min(2).max(120),
+  email: z.string().email(),
+  password: z.string().min(6).optional(),
+});
+export const updateProfile = createServerFn({ method: "POST" })
+  .inputValidator((d: z.input<typeof updateProfileSchema>) => updateProfileSchema.parse(d))
+  .handler(async ({ data }) => {
+    const sess = await requireUser();
+    const { getRepo } = await import("./db.server");
+    const repo = await getRepo();
+    const u = await repo.getUser(sess.sub);
+    if (!u) throw new Error("User not found");
+    if (sess.role === "student") {
+      await repo.updateStudent(sess.sub, {
+        name: data.name,
+        email: data.email,
+        matricNo: u.matricNo ?? "",
+        departmentId: u.departmentId ?? "",
+        level: u.level ?? "",
+        password: data.password ?? "",
+      });
+    } else if (sess.role === "lecturer") {
+      await repo.updateLecturer(sess.sub, {
+        name: data.name,
+        email: data.email,
+        staffId: u.staffId ?? "",
+        departmentId: u.departmentId ?? "",
+        password: data.password ?? "",
+      });
+    } else {
+      throw new Error("Admins manage their account via the admin panel");
+    }
+    return { ok: true };
+  });

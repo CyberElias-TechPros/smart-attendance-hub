@@ -3,18 +3,24 @@ import { useSuspenseQuery, useQueryClient, queryOptions } from "@tanstack/react-
 import { useServerFn } from "@tanstack/react-start";
 import {
   listCourses, listDepartments, listUsers,
-  createCourse, deleteCourse, assignLecturer, enrollStudents,
+  createCourse, updateCourse, deleteCourse, assignLecturer, enrollStudents,
 } from "@/lib/api.functions";
 import { PageHeader } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Trash2, Users, BookOpen } from "lucide-react";
+import { Plus, Trash2, Users, BookOpen, Pencil } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { CourseGlyph } from "@/lib/courseIcons";
+import { ICON_NAMES } from "@/lib/courseIcons";
+import { RouteTransition } from "@/components/RouteTransition";
+import { EmptyState } from "@/components/EmptyState";
+import { CardSkeleton } from "@/components/Loaders";
 
 const coursesQO = queryOptions({ queryKey: ["courses"], queryFn: () => listCourses() });
 const deptsQO = queryOptions({ queryKey: ["departments"], queryFn: () => listDepartments() });
@@ -45,16 +51,30 @@ function CoursesPage() {
   const enrollFn = useServerFn(enrollStudents);
 
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ code: "", title: "", departmentId: "", level: "100", units: 3 });
+  const [editing, setEditing] = useState<string | null>(null);
+  const [form, setForm] = useState({ code: "", title: "", departmentId: "", level: "100", units: 3, icon: "", color: "", category: "", description: "" });
+
+  const resetForm = () => setForm({ code: "", title: "", departmentId: "", level: "100", units: 3, icon: "", color: "", category: "", description: "" });
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await createFn({ data: form });
-      toast.success("Course created");
-      setOpen(false); setForm({ code: "", title: "", departmentId: "", level: "100", units: 3 });
+      if (editing) {
+        await updateCourse({ data: { id: editing, ...form } });
+        toast.success("Course updated");
+      } else {
+        await createFn({ data: form });
+        toast.success("Course created");
+      }
+      setOpen(false); setEditing(null); resetForm();
       qc.invalidateQueries({ queryKey: ["courses"] });
     } catch (err) { toast.error(err instanceof Error ? err.message : "Failed"); }
+  };
+
+  const startEdit = (c: { id: string; code: string; title: string; departmentId: string; level: string; units: number; icon?: string; color?: string; category?: string; description?: string }) => {
+    setEditing(c.id);
+    setForm({ code: c.code, title: c.title, departmentId: c.departmentId, level: c.level, units: c.units, icon: c.icon ?? "", color: c.color ?? "", category: c.category ?? "", description: c.description ?? "" });
+    setOpen(true);
   };
 
   return (
@@ -63,11 +83,11 @@ function CoursesPage() {
         title="Courses"
         subtitle={`${courses.length} courses across the faculty`}
         actions={
-          <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger asChild><Button><Plus className="mr-2 h-4 w-4" /> New course</Button></DialogTrigger>
+          <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setEditing(null); resetForm(); } }}>
+            <DialogTrigger asChild><Button><Plus className="mr-2 h-4 w-4" /> {editing ? "Edit course" : "New course"}</Button></DialogTrigger>
             <DialogContent>
               <form onSubmit={submit}>
-                <DialogHeader><DialogTitle>Create course</DialogTitle></DialogHeader>
+                <DialogHeader><DialogTitle>{editing ? "Edit course" : "Create course"}</DialogTitle></DialogHeader>
                 <div className="mt-4 grid gap-3">
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1.5"><Label>Code</Label><Input required value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} /></div>
@@ -88,31 +108,51 @@ function CoursesPage() {
                       </Select>
                     </div>
                   </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5"><Label>Icon</Label>
+                      <Select value={form.icon} onValueChange={(v) => setForm({ ...form, icon: v })}>
+                        <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+                        <SelectContent>{ICON_NAMES.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1.5"><Label>Color</Label><Input value={form.color} onChange={(e) => setForm({ ...form, color: e.target.value })} placeholder="oklch(...) or hex" /></div>
+                  </div>
+                  <div className="space-y-1.5"><Label>Category (optional)</Label><Input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></div>
+                  <div className="space-y-1.5"><Label>Description</Label><Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} rows={3} /></div>
                 </div>
-                <DialogFooter className="mt-6"><Button type="submit">Create</Button></DialogFooter>
+                <DialogFooter className="mt-6"><Button type="submit">{editing ? "Save" : "Create"}</Button></DialogFooter>
               </form>
             </DialogContent>
           </Dialog>
         }
       />
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <RouteTransition stagger className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {courses.length === 0 && (
+          <EmptyState
+            className="col-span-full"
+            icon={<BookOpen className="h-7 w-7" />}
+            title="No courses"
+            description="Create your first course to get started."
+          />
+        )}
         {courses.map((c) => {
           const dept = depts.find((d) => d.id === c.departmentId);
           return (
             <div key={c.id} className="rounded-2xl border border-border/70 bg-card p-5 shadow-elegant">
               <div className="flex items-start justify-between">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <div className="grid h-9 w-9 place-items-center rounded-lg bg-primary/10 text-primary"><BookOpen className="h-4 w-4" /></div>
-                    <div>
-                      <div className="font-mono text-xs text-muted-foreground">{c.code}</div>
-                      <div className="font-display font-semibold">{c.title}</div>
-                    </div>
+                <div className="flex items-center gap-3">
+                  <CourseGlyph icon={c.icon} color={c.color} seed={c.code} size="md" />
+                  <div>
+                    <div className="font-mono text-xs text-muted-foreground">{c.code}</div>
+                    <div className="font-display font-semibold">{c.title}</div>
                   </div>
                 </div>
-                <Button variant="ghost" size="icon" onClick={async () => { await delFn({ data: { id: c.id } }); qc.invalidateQueries({ queryKey: ["courses"] }); toast.success("Deleted"); }}>
-                  <Trash2 className="h-4 w-4 text-destructive" />
-                </Button>
+                <div className="flex gap-1">
+                  <Button variant="ghost" size="icon" onClick={() => startEdit(c)}><Pencil className="h-4 w-4" /></Button>
+                  <Button variant="ghost" size="icon" onClick={async () => { await delFn({ data: { id: c.id } }); qc.invalidateQueries({ queryKey: ["courses"] }); toast.success("Deleted"); }}>
+                    <Trash2 className="h-4 w-4 text-destructive" />
+                  </Button>
+                </div>
               </div>
               <div className="mt-3 flex flex-wrap gap-2 text-xs">
                 <Badge variant="secondary">{dept?.code}</Badge>
@@ -150,7 +190,7 @@ function CoursesPage() {
             </div>
           );
         })}
-      </div>
+      </RouteTransition>
     </>
   );
 }

@@ -17,6 +17,9 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { exportPDF, exportExcel } from "@/lib/exporters";
 import { FileDown, FileSpreadsheet } from "lucide-react";
+import { CourseGlyph } from "@/lib/courseIcons";
+import { useAtRiskThreshold } from "@/lib/useSiteSettings";
+import { burstCelebrate } from "@/lib/confetti";
 
 const coursesQO = queryOptions({ queryKey: ["lecturer", "courses"], queryFn: () => lecturerCourses() });
 
@@ -31,6 +34,7 @@ function CourseDetailPage() {
   const course = courses.find((c) => c.id === courseId);
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const threshold = useAtRiskThreshold();
   const startFn = useServerFn(startSession);
   const endFn = useServerFn(endSession);
 
@@ -85,9 +89,12 @@ function CourseDetailPage() {
 
   return (
     <>
-      <button onClick={() => navigate({ to: "/lecturer/courses" })} className="mb-4 inline-flex items-center text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="mr-1 h-4 w-4" /> All courses
-      </button>
+      <div className="mb-4 flex items-center gap-3">
+        <button onClick={() => navigate({ to: "/lecturer/courses" })} className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="mr-1 h-4 w-4" /> All courses
+        </button>
+        {course && <CourseGlyph icon={course.icon} color={course.color} seed={course.code} size="md" />}
+      </div>
       <PageHeader
         title={`${course.code} — ${course.title}`}
         subtitle={`Level ${course.level} · ${course.units} units · ${course.enrolledStudentIds.length} students`}
@@ -112,7 +119,7 @@ function CourseDetailPage() {
                 <Button className="flex-1" onClick={() => navigate({ to: "/lecturer/sessions/$sessionId", params: { sessionId: openSession.id } })}>
                   Open live view
                 </Button>
-                <Button variant="outline" onClick={async () => { await endFn({ data: { sessionId: openSession.id } }); qc.invalidateQueries(); toast.success("Session ended"); }}>End</Button>
+                <Button variant="outline" onClick={async () => { await endFn({ data: { sessionId: openSession.id } }); burstCelebrate(); qc.invalidateQueries(); toast.success(`${reportQ.data?.students?.length ?? 0} students reached`); }}>End</Button>
               </div>
             </div>
           ) : (
@@ -175,7 +182,7 @@ function CourseDetailPage() {
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <Progress value={s.percentage} className="h-2" />
-                          <span className={s.percentage < 70 ? "text-destructive font-mono text-xs" : "font-mono text-xs"}>{s.percentage}%</span>
+                          <span className={s.percentage < threshold ? "text-destructive font-mono text-xs" : "font-mono text-xs"}>{s.percentage}%</span>
                         </div>
                       </TableCell>
                     </TableRow>
