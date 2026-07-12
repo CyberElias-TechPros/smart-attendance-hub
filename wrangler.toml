@@ -2,6 +2,7 @@ name = "slams"
 main = "./.output/server/index.mjs"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
+account_id = "e543b6a0521fc8fd76447ceba097b665"
 
 # Static assets built by Vite, served by Nitro's cloudflare_module worker.
 assets = { directory = "./.output/public", binding = "ASSETS" }
