@@ -230,8 +230,8 @@ function LogoMarquee({ items }: { items?: string[] }) {
           Trusted by faculties running SLAMS
         </p>
         <div className="relative mt-4 overflow-hidden [mask-image:linear-gradient(to_right,transparent,black_12%,black_88%,transparent)]">
-          <div className="flex w-max animate-marquee gap-10">
-            {[...items, ...items].map((i, idx) => (
+           <div className="flex w-max animate-marquee gap-10">
+             {[...list, ...list].map((i, idx) => (
               <span key={idx} className="whitespace-nowrap font-display text-sm font-medium text-muted-foreground/80">
                 {i}
               </span>
