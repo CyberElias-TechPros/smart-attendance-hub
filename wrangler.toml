@@ -1,23 +1,36 @@
-name = "slams"
-main = "./.output/server/index.mjs"
+# SLAMS API — Cloudflare Workers + D1.
+#
+# The frontend is a static SPA deployed to Vercel; this Worker is the API
+# backend. Local development: `npm run cf:dev` (wrangler dev) — D1 is emulated
+# locally, no Cloudflare account needed.
+
+name = "slams-api"
+main = "worker/src/index.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 account_id = "e543b6a0521fc8fd76447ceba097b665"
 
-# Static assets built by Vite, served by Nitro's cloudflare_module worker.
-assets = { directory = "./.output/public", binding = "ASSETS" }
+# Vercel frontend origin(s) allowed by CORS. Comma-separated.
+# Leave empty during local development (allow all, with a startup warning).
+# Example production value:
+#   ALLOWED_ORIGINS = "https://your-app.vercel.app,https://preview-your-app-123.vercel.app"
+[vars]
+ALLOWED_ORIGINS = ""
 
-# Cloudflare D1 database. Create it once with:
-#   wrangler d1 create slams
-# then paste the returned database_id below.
+# Cloudflare D1 database (already created; id is committed so
+# `wrangler d1 execute/migrations` work out of the box).
 [[d1_databases]]
 binding = "DB"
 database_name = "slams"
 database_id = "7ba50733-1f70-48ea-8d30-8c450e963c31"
 migrations_dir = "migrations"
 
+# Secrets (set with `npx wrangler secret put <NAME>` — never committed):
+#   SLAMS_JWT_SECRET   JWT signing secret (required in production).
+# A local dev value can be placed in .dev.vars (see .dev.vars.example).
+
 [observability]
-enabled = false
+enabled = true
 head_sampling_rate = 1
 
 [observability.logs]

@@ -1,5 +1,5 @@
-import { createFileRoute, redirect, Outlet } from "@tanstack/react-router";
-import { me } from "@/lib/api.functions";
+import { createFileRoute, Outlet } from "@tanstack/react-router";
+import { requireRole } from "@/lib/queries";
 import { AppShell, type NavItem } from "@/components/AppShell";
 import { LayoutDashboard, BookOpen, PlayCircle, Settings } from "lucide-react";
 
@@ -11,10 +11,8 @@ const nav: NavItem[] = [
 ];
 
 export const Route = createFileRoute("/lecturer")({
-  beforeLoad: async () => {
-    const user = await me();
-    if (!user) throw redirect({ to: "/login" });
-    if (user.role !== "lecturer") throw redirect({ to: user.role === "admin" ? "/admin" : "/student" });
+  beforeLoad: async ({ context }) => {
+    const user = await requireRole(context, "lecturer");
     return { user };
   },
   component: LecturerLayout,

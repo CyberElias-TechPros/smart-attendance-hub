@@ -6,7 +6,9 @@ function applyTheme(theme: "light" | "dark") {
   root.classList.toggle("dark", theme === "dark");
   try {
     localStorage.setItem("slams-theme", theme);
-  } catch {}
+  } catch {
+    /* storage unavailable (private mode) — theme just won't persist */
+  }
 }
 
 export function ThemeToggle({ className }: { className?: string }) {
@@ -19,7 +21,9 @@ export function ThemeToggle({ className }: { className?: string }) {
       const saved = localStorage.getItem("slams-theme");
       if (saved === "light" || saved === "dark") initial = saved;
       else if (window.matchMedia("(prefers-color-scheme: dark)").matches) initial = "dark";
-    } catch {}
+    } catch {
+      /* fall back to light */
+    }
     setTheme(initial);
     applyTheme(initial);
     setMounted(true);
@@ -41,7 +45,9 @@ export function ThemeToggle({ className }: { className?: string }) {
         (className ?? "")
       }
     >
-      <span suppressHydrationWarning>{mounted && theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}</span>
+      <span suppressHydrationWarning>
+        {mounted && theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+      </span>
     </button>
   );
 }

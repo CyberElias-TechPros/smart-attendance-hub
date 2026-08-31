@@ -1,22 +1,54 @@
-// @lovable.dev/vite-tanstack-config already includes the following — do NOT add them manually
-// or the app will break with duplicate plugins:
-//   - TanStack devtools (dev-only, first), tanstackStart, viteReact, tailwindcss, tsConfigPaths,
-//     nitro (build-only using cloudflare as a default target), VITE_* env injection, @ path alias,
-//     React/TanStack dedupe, error logger plugins, and sandbox detection (port/host/strictPort).
-// You can pass additional config via defineConfig({ vite: { ... }, etc... }) if needed.
-import { defineConfig } from "@lovable.dev/vite-tanstack-config";
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import { tanstackRouter } from "@tanstack/router-plugin/vite";
+import { fileURLToPath } from "node:url";
 
+// SLAMS frontend — static SPA (deployed to Vercel).
+// The backend is the Cloudflare Workers API in /worker (see wrangler.toml).
+// During development the SPA talks to the API at VITE_API_URL
+// (default http://localhost:8787, where `wrangler dev` serves it).
 export default defineConfig({
-  tanstackStart: {
-    // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
-    // nitro/vite builds from this
-    server: { entry: "server" },
-  },
-  // Cloudflare Workers target (enabled by the bundled nitro preset).
-  nitro: {
-    cloudflare: {
-      // Enable Node.js compatibility so Web/Node crypto (PBKDF2, btoa/atob) work at runtime.
-      nodeCompat: true,
+  plugins: [
+    // File-based router codegen (src/routes -> src/routeTree.gen.ts).
+    // Must come first so the route tree exists before other plugins run.
+    tanstackRouter({
+      target: "react",
+      routesDirectory: "./src/routes",
+      generatedRouteTree: "./src/routeTree.gen.ts",
+    }),
+    react(),
+    tailwindcss(),
+  ],
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
     },
+  },
+  server: {
+    host: true,
+    port: 5173,
+    strictPort: false,
+    // Dev server only — the sandbox/browser preview reaches Vite through a
+    // proxied host, so allow all hosts (no auth-sensitive surface here;
+    // production is served statically by Vercel).
+    allowedHosts: true,
+    // In local dev the SPA calls same-origin /api and Vite forwards it to the
+    // Worker (wrangler dev, :8787) server-side — no CORS setup needed in the
+    // browser. Override with API_PROXY_TARGET if the Worker runs elsewhere.
+    proxy: {
+      "/api": {
+        target: process.env.API_PROXY_TARGET ?? "http://127.0.0.1:8787",
+        changeOrigin: true,
+      },
+    },
+  },
+  preview: {
+    host: true,
+    port: 4173,
+  },
+  build: {
+    outDir: "dist",
+    sourcemap: false,
   },
 });

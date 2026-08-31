@@ -63,7 +63,11 @@ export function computeMilestones(input: MilestoneInput): Milestone[] {
   const firstEver = sortedHistory[0];
 
   // 1. First-ever sign-in (global, anchored to the course of that record)
-  if (sortedHistory.length >= 1 && firstEver.courseId === course.id && course.attendedSessions === 1) {
+  if (
+    sortedHistory.length >= 1 &&
+    firstEver.courseId === course.id &&
+    course.attendedSessions === 1
+  ) {
     out.push({
       id: "first-ever",
       tone: "celebrate",

@@ -1,7 +1,7 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { useSuspenseQuery, useQueryClient, queryOptions } from "@tanstack/react-query";
-import { useServerFn } from "@tanstack/react-start";
-import { me, listDepartments, changePassword, updateProfile } from "@/lib/api.functions";
+import { useSuspenseQuery, useQueryClient } from "@tanstack/react-query";
+import { users } from "@/lib/api";
+import { deptsQO, loadCurrentUser } from "@/lib/queries";
 import { PageHeader } from "@/components/AppShell";
 import { Avatar } from "@/components/Avatar";
 import { Button } from "@/components/ui/button";
@@ -14,15 +14,13 @@ import { toast } from "sonner";
 import { KeyRound, UserCog, Mail, GraduationCap, Save } from "lucide-react";
 import { RouteTransition } from "@/components/RouteTransition";
 
-const deptsQO = queryOptions({ queryKey: ["departments"], queryFn: () => listDepartments() });
-
 export const Route = createFileRoute("/settings")({
-  beforeLoad: async () => {
-    const user = await me();
+  beforeLoad: async ({ context }) => {
+    const user = await loadCurrentUser(context);
     if (!user) throw redirect({ to: "/login" });
+    await context.queryClient.ensureQueryData(deptsQO);
     return { user };
   },
-  loader: ({ context }) => context.queryClient.ensureQueryData(deptsQO),
   component: SettingsPage,
 });
 
@@ -30,8 +28,6 @@ function SettingsPage() {
   const { user } = Route.useRouteContext();
   const { data: depts } = useSuspenseQuery(deptsQO);
   const qc = useQueryClient();
-  const changeFn = useServerFn(changePassword);
-  const profileFn = useServerFn(updateProfile);
   const [cur, setCur] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -43,13 +39,14 @@ function SettingsPage() {
 
   const savePassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (next.length < 6) return toast.error("New password must be at least 6 characters");
+    if (next.length < 8) return toast.error("New password must be at least 8 characters");
     if (next !== confirm) return toast.error("New passwords do not match");
     try {
-      await changeFn({ data: { currentPassword: cur, newPassword: next } });
+      await users.changePassword(cur, next);
       toast.success("Password changed");
-      setCur(""); setNext(""); setConfirm("");
-      qc.invalidateQueries({ queryKey: ["users"] });
+      setCur("");
+      setNext("");
+      setConfirm("");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
     }
@@ -58,8 +55,9 @@ function SettingsPage() {
   const saveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await profileFn({ data: { name, email } });
+      await users.updateProfile({ name, email });
       toast.success("Profile updated");
+      qc.invalidateQueries({ queryKey: ["me"] });
       qc.invalidateQueries({ queryKey: ["users"] });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
@@ -77,21 +75,50 @@ function SettingsPage() {
               <Avatar name={user.name} seed={user.id} size="xl" />
               <div className="mt-4 font-display text-lg font-semibold">{user.name}</div>
               <div className="text-sm text-muted-foreground">{user.email}</div>
-              <Badge className="mt-2" variant="secondary">{roleLabel}</Badge>
+              <Badge className="mt-2" variant="secondary">
+                {roleLabel}
+              </Badge>
             </div>
             <div className="mt-5 space-y-2 border-t border-border/60 pt-4 text-sm">
-              <Row icon={<GraduationCap className="h-4 w-4" />} label="Department" value={dept?.name ?? "—"} />
-              {user.role === "student" && <Row icon={<UserCog className="h-4 w-4" />} label="Matric" value={user.matricNo ?? "—"} />}
-              {user.role === "lecturer" && <Row icon={<UserCog className="h-4 w-4" />} label="Staff ID" value={user.staffId ?? "—"} />}
-              {user.level && <Row icon={<GraduationCap className="h-4 w-4" />} label="Level" value={user.level} />}
+              <Row
+                icon={<GraduationCap className="h-4 w-4" />}
+                label="Department"
+                value={dept?.name ?? "—"}
+              />
+              {user.role === "student" && (
+                <Row
+                  icon={<UserCog className="h-4 w-4" />}
+                  label="Matric"
+                  value={user.matricNo ?? "—"}
+                />
+              )}
+              {user.role === "lecturer" && (
+                <Row
+                  icon={<UserCog className="h-4 w-4" />}
+                  label="Staff ID"
+                  value={user.staffId ?? "—"}
+                />
+              )}
+              {user.level && (
+                <Row
+                  icon={<GraduationCap className="h-4 w-4" />}
+                  label="Level"
+                  value={user.level}
+                />
+              )}
             </div>
           </div>
         </div>
 
         <div className="lg:col-span-2 space-y-6">
-          <form onSubmit={saveProfile} className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
+          <form
+            onSubmit={saveProfile}
+            className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant"
+          >
             <div className="flex items-center gap-2">
-              <div className="grid h-9 w-9 place-items-center rounded-lg bg-primary/10 text-primary"><Mail className="h-4 w-4" /></div>
+              <div className="grid h-9 w-9 place-items-center rounded-lg bg-primary/10 text-primary">
+                <Mail className="h-4 w-4" />
+              </div>
               <h2 className="font-display text-lg font-semibold">Update profile</h2>
             </div>
             <div className="mt-5 max-w-md space-y-4">
@@ -101,31 +128,61 @@ function SettingsPage() {
               </div>
               <div className="space-y-1.5">
                 <Label>Email</Label>
-                <Input required type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+                <Input
+                  required
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                />
               </div>
             </div>
             <div className="mt-6 flex justify-end">
-              <Button type="submit"><Save className="mr-2 h-4 w-4" /> Save profile</Button>
+              <Button type="submit">
+                <Save className="mr-2 h-4 w-4" /> Save profile
+              </Button>
             </div>
           </form>
 
-          <form onSubmit={savePassword} className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
+          <form
+            onSubmit={savePassword}
+            className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant"
+          >
             <div className="flex items-center gap-2">
-              <div className="grid h-9 w-9 place-items-center rounded-lg bg-primary/10 text-primary"><KeyRound className="h-4 w-4" /></div>
+              <div className="grid h-9 w-9 place-items-center rounded-lg bg-primary/10 text-primary">
+                <KeyRound className="h-4 w-4" />
+              </div>
               <h2 className="font-display text-lg font-semibold">Change password</h2>
             </div>
             <div className="mt-5 max-w-md space-y-4">
               <div className="space-y-1.5">
                 <Label>Current password</Label>
-                <Input type="password" required value={cur} onChange={(e) => setCur(e.target.value)} placeholder="••••••••" />
+                <Input
+                  type="password"
+                  required
+                  value={cur}
+                  onChange={(e) => setCur(e.target.value)}
+                  placeholder="••••••••"
+                />
               </div>
               <div className="space-y-1.5">
                 <Label>New password</Label>
-                <Input type="password" required value={next} onChange={(e) => setNext(e.target.value)} placeholder="At least 6 characters" />
+                <Input
+                  type="password"
+                  required
+                  value={next}
+                  onChange={(e) => setNext(e.target.value)}
+                  placeholder="At least 8 characters"
+                />
               </div>
               <div className="space-y-1.5">
                 <Label>Confirm new password</Label>
-                <Input type="password" required value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="••••••••" />
+                <Input
+                  type="password"
+                  required
+                  value={confirm}
+                  onChange={(e) => setConfirm(e.target.value)}
+                  placeholder="••••••••"
+                />
               </div>
             </div>
             <div className="mt-6 flex justify-end">
@@ -135,12 +192,15 @@ function SettingsPage() {
 
           <Card className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
             <div className="flex items-center gap-2">
-              <div className="grid h-9 w-9 place-items-center rounded-lg bg-accent/20 text-accent-foreground"><Mail className="h-4 w-4" /></div>
+              <div className="grid h-9 w-9 place-items-center rounded-lg bg-accent/20 text-accent-foreground">
+                <Mail className="h-4 w-4" />
+              </div>
               <h2 className="font-display text-lg font-semibold">Account</h2>
             </div>
             <p className="mt-3 text-sm text-muted-foreground">
-              Signed in as <span className="font-medium text-foreground">{user.email}</span>. Your session is secured with a signed,
-              HTTP-only cookie. Use the password form to keep your account safe.
+              Signed in as <span className="font-medium text-foreground">{user.email}</span>. Your
+              session is secured with a signed token that expires after 7 days. Use the password
+              form to keep your account safe.
             </p>
           </Card>
         </div>

@@ -1,26 +1,34 @@
 // Client-side PDF & Excel exporters for course reports.
-import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
-import * as XLSX from "xlsx";
+// Heavy dependencies (jspdf, xlsx) are lazy-loaded so the app shell stays
+// fast; they only download when a user actually exports a report.
+import type { CourseReportData, ExportOptions } from "./export-types";
 
-export interface CourseReportData {
-  course: { code: string; title: string; level: string; units: number };
-  totalSessions: number;
-  students: Array<{ id: string; name: string; matricNo: string; attended: number; percentage: number }>;
+function safeFileName(code: string): string {
+  return code.replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "") || "course";
 }
 
-export function exportPDF(report: CourseReportData) {
-  const doc = new jsPDF();
+export async function exportPDF(report: CourseReportData, options: ExportOptions = {}) {
+  const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
+    import("jspdf"),
+    import("jspdf-autotable"),
+  ]);
   const { course, totalSessions, students } = report;
+  const institution = options.institutionName ?? "SLAMS";
+
+  const doc = new jsPDF();
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(16);
-  doc.text("SLAMS Attendance Report", 14, 18);
+  doc.text(`${institution} — Attendance Report`, 14, 18);
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(11);
   doc.text(`Course: ${course.code} — ${course.title}`, 14, 28);
-  doc.text(`Level: ${course.level}   Units: ${course.units}   Sessions held: ${totalSessions}`, 14, 35);
+  doc.text(
+    `Level: ${course.level}   Units: ${course.units}   Sessions held: ${totalSessions}`,
+    14,
+    35,
+  );
   doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 42);
 
   autoTable(doc, {
@@ -38,11 +46,13 @@ export function exportPDF(report: CourseReportData) {
     headStyles: { fillColor: [15, 92, 75] },
   });
 
-  doc.save(`attendance-${course.code.replace(/\s+/g, "_")}.pdf`);
+  doc.save(`attendance-${safeFileName(course.code)}.pdf`);
 }
 
-export function exportExcel(report: CourseReportData) {
+export async function exportExcel(report: CourseReportData, _options: ExportOptions = {}) {
+  const XLSX = await import("xlsx");
   const { course, totalSessions, students } = report;
+  void course;
   const rows = students.map((s, i) => ({
     "#": i + 1,
     Name: s.name,
@@ -54,5 +64,5 @@ export function exportExcel(report: CourseReportData) {
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Attendance");
-  XLSX.writeFile(wb, `attendance-${course.code.replace(/\s+/g, "_")}.xlsx`);
+  XLSX.writeFile(wb, `attendance-${safeFileName(course.code)}.xlsx`);
 }

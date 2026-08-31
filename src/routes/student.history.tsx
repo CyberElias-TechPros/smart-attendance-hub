@@ -1,21 +1,28 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useSuspenseQuery, queryOptions } from "@tanstack/react-query";
-import { studentHistory } from "@/lib/api.functions";
+import { useSuspenseQuery } from "@tanstack/react-query";
+import { studentHistoryQO } from "@/lib/queries";
 import { PageHeader } from "@/components/AppShell";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { History } from "lucide-react";
 import { EmptyState } from "@/components/EmptyState";
 import { RouteTransition } from "@/components/RouteTransition";
 
-const historyQO = queryOptions({ queryKey: ["student", "history"], queryFn: () => studentHistory() });
-
 export const Route = createFileRoute("/student/history")({
-  loader: ({ context }) => context.queryClient.ensureQueryData(historyQO),
+  beforeLoad: async ({ context }) => {
+    await context.queryClient.ensureQueryData(studentHistoryQO);
+  },
   component: HistoryPage,
 });
 
 function HistoryPage() {
-  const { data } = useSuspenseQuery(historyQO);
+  const { data } = useSuspenseQuery(studentHistoryQO);
   return (
     <RouteTransition>
       <PageHeader title="Attendance history" subtitle="Every session you've signed in for." />
@@ -39,10 +46,14 @@ function HistoryPage() {
             <TableBody>
               {data.map((r) => (
                 <TableRow key={r.id}>
-                  <TableCell className="font-mono text-xs">{new Date(r.timestamp).toLocaleDateString()}</TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {new Date(r.timestamp).toLocaleDateString()}
+                  </TableCell>
                   <TableCell className="font-medium">{r.courseCode}</TableCell>
                   <TableCell className="text-muted-foreground">{r.courseTitle}</TableCell>
-                  <TableCell className="text-right font-mono text-xs">{new Date(r.timestamp).toLocaleTimeString()}</TableCell>
+                  <TableCell className="text-right font-mono text-xs">
+                    {new Date(r.timestamp).toLocaleTimeString()}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

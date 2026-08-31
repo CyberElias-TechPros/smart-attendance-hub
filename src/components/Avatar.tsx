@@ -37,7 +37,13 @@ export function Avatar({
   const grad = PALETTE[hash(key) % PALETTE.length];
 
   const dims =
-    size === "sm" ? "h-8 w-8 text-xs" : size === "lg" ? "h-12 w-12 text-base" : size === "xl" ? "h-16 w-16 text-xl" : "h-10 w-10 text-sm";
+    size === "sm"
+      ? "h-8 w-8 text-xs"
+      : size === "lg"
+        ? "h-12 w-12 text-base"
+        : size === "xl"
+          ? "h-16 w-16 text-xl"
+          : "h-10 w-10 text-sm";
 
   return (
     <div

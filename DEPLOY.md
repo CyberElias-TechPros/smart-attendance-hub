@@ -1,106 +1,196 @@
-# Deploying SLAMS to Cloudflare (Workers + D1)
+# Deploying SLAMS (Vercel frontend + Cloudflare Worker/D1 backend)
 
-SLAMS is built with TanStack Start and compiled by Nitro to a **Cloudflare
-Workers** module. State lives in **D1** (serverless SQLite). Everything is
-configured in `wrangler.toml` and `vite.config.ts` — you do not need to touch
-the build internals.
+The app is split into two deployables:
+
+1. **Frontend** — a static Vite SPA, deployed to **Vercel** (`/` → `dist/`).
+2. **Backend** — a Cloudflare **Worker** API backed by **D1** (SQLite),
+   deployed with `wrangler` from this repo.
+
+The frontend calls the backend over HTTPS using `VITE_API_URL` (baked in at
+build time) and a `Bearer` JWT. The Worker's `ALLOWED_ORIGINS` variable must
+list the frontend origin(s) for CORS.
 
 ## Prerequisites
 
 - A [Cloudflare](https://cloudflare.com) account (free tier is enough).
-- [Node.js 20+](https://nodejs.org) and npm.
-- Wrangler (installed as a dev dependency; run via `npm run`).
+- A [Vercel](https://vercel.com) account (free/hobby tier is enough).
+- [Node.js 22+](https://nodejs.org) and npm, locally (for the wrangler CLI).
 
 ```bash
 npm install
-npx wrangler login        # authenticate the CLI once
+npx wrangler login        # authenticate the wrangler CLI once
 ```
 
-## 1. Create the D1 database
+---
+
+## Backend — Cloudflare Worker + D1
+
+The Worker and D1 binding are already configured in `wrangler.toml`
+(`name = "slams-api"`, binding `DB` → database `slams`, `database_id`
+committed). If you are starting a **fresh Cloudflare account** and the
+committed `database_id` isn't yours, create a database and paste its id into
+`wrangler.toml`:
 
 ```bash
-npm run db:create         # -> wrangler d1 create slams
+npm run db:create                    # wrangler d1 create slams
+# copy the printed database_id into wrangler.toml → [[d1_databases]]
 ```
 
-Wrangler prints a `database_id`. Open `wrangler.toml` and replace:
+### 1. Apply migrations
 
-```toml
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
-```
-
-with that value.
-
-## 2. Apply the schema
-
-Create the tables in **production** D1:
+Migrations in `migrations/` are additive and non-destructive; they run in
+order and are tracked by D1:
 
 ```bash
-npm run db:migrate:remote
+npm run db:migrate:remote            # wrangler d1 migrations apply slams --remote
 ```
 
-> For a fully local test instead, use `npm run db:migrate:local` (needs
-> `wrangler dev` / Miniflare). The app will also auto-seed demo data on first
-> request.
+### 2. Set the JWT secret
 
-## 3. Build & deploy
+The Worker signs session JWTs with `SLAMS_JWT_SECRET`. Set it **as a secret**
+(never in `wrangler.toml`, never committed):
 
 ```bash
-npm run deploy           # vite build  ->  wrangler deploy
+npx wrangler secret put SLAMS_JWT_SECRET
+# paste a long random string (>= 32 chars), e.g.:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-Nitro writes the Worker to `.output` and generates `.output/server/wrangler.json`
-(merging your D1 binding). Wrangler then publishes it. After a moment your app
-is live at `https://slams.<your-subdomain>.workers.dev`.
+> If the secret is missing in production the Worker falls back to a
+> development secret and prints a warning — set it for real deployments.
 
-### Local preview against real D1
+### 3. Allow the frontend origin (CORS)
+
+Set the comma-separated list of browser origins that may call the API.
+Include your production Vercel URL **and** (optionally) the preview URL
+pattern if you need CORS for preview deploys:
 
 ```bash
-npm run db:migrate:local
-npm run cf:dev           # wrangler dev (serves the built worker + D1 locally)
+npx wrangler secret put ALLOWED_ORIGINS   # or a var, since it is not sensitive
+# e.g. https://your-app.vercel.app
 ```
 
-## 4. Seed data
+`ALLOWED_ORIGINS` is declared in `wrangler.toml` `[vars]` (empty by default
+= allow all, with a startup warning — dev-friendly). For production set it as
+a **var** to your origin(s); it is not a secret. You can set it in the
+Cloudflare dashboard (Workers → slams-api → Settings → Variables) or by
+changing the `[vars]` value in `wrangler.toml` and re-deploying.
 
-On the first request after deploy, the repository auto-seeds departments,
-demo users, courses, and a few historical sessions. Sign in with the demo
-accounts from the README. To start fresh later, clear the tables with:
+### 4. Deploy
 
 ```bash
-npx wrangler d1 execute slams --remote --command "DELETE FROM attendance_records; DELETE FROM sessions; DELETE FROM course_enrollments; DELETE FROM courses; DELETE FROM users; DELETE FROM departments;"
+npm run deploy        # builds the frontend (typecheck + vite) and runs wrangler deploy
+# or just the Worker:
+npx wrangler deploy
 ```
 
-(Or run `npx wrangler d1 execute slams --remote --command "DROP TABLE ..."` per
-table and re-apply migrations.)
+Wrangler prints the Worker URL, e.g.
+`https://slams-api.<subdomain>.workers.dev`. Verify:
 
-## Environment & secrets
+```bash
+curl https://slams-api.<subdomain>.workers.dev/api/health
+# → {"ok":true,"data":{"status":"ok",...}}
+```
 
-- There are **no required secrets** for a basic deploy — the JWT signing secret
-  defaults to a dev value inside `src/lib/auth.server.ts`. For production,
-  override it with a Workers secret:
+Demo data is auto-seeded on first use (admin/lecturer/student accounts plus a
+sample department/course/enrollment).
 
-  ```bash
-  npx wrangler secret put SLAMS_JWT_SECRET   # paste a long random string
-  ```
+---
 
-  Then update `getSecret()` in `src/lib/auth.server.ts` to prefer
-  `process.env.SLAMS_JWT_SECRET`.
+## Frontend — Vercel
 
-- Sessions use an `HttpOnly`, `SameSite=Lax` cookie — no extra config needed.
+1. Push this repository to GitHub (or connect the Git repo to Vercel).
+2. In Vercel: **Add New → Project** → import the repo.
+   - Vercel auto-detects **Vite**. `vercel.json` already pins
+     `buildCommand: npm run build` (typecheck + vite build) and
+     `outputDirectory: dist`, with SPA rewrites and security headers.
+3. **Environment variables** (Project → Settings → Environment Variables):
 
-## How the data layer works
+   | Variable        | Value (production)                                  |
+   | --------------- | --------------------------------------------------- |
+   | `VITE_API_URL`  | `https://slams-api.<subdomain>.workers.dev`         |
 
-`src/lib/db.server.ts` exports `getRepo()`, which returns a **D1-backed**
-repository when the `DB` binding is present (production / `wrangler dev`), and
-falls back to an **in-memory** store when it isn't (plain `vite dev`). All server
-functions in `src/lib/api.functions.ts` go through this repository, so the rest
-of the app is storage-agnostic. D1 is reached via the canonical
-`import { env } from "cloudflare:workers"` Worker env.
+   Set it for **Production** (and Preview/Development if you want those to
+   point at the same API). `VITE_`-prefixed variables are inlined into the
+   client bundle at build time, so the build must run *after* the variable
+   exists — re-deploy if you change it.
+
+4. **Deploy.** Copy the production URL, e.g. `https://your-app.vercel.app`.
+5. Go back to Cloudflare and add that URL to `ALLOWED_ORIGINS` (step
+   Backend/3) if you didn't already, then re-deploy the Worker if you changed
+   `wrangler.toml`.
+
+### Local frontend preview against the real API
+
+```bash
+echo "VITE_API_URL=https://slams-api.<subdomain>.workers.dev" > .env
+npm run dev        # SPA on :5173 calling the production Worker
+```
+
+---
+
+## CI (optional)
+
+A ready-made GitHub Actions workflow runs lint + typecheck + tests + build on
+every push/PR:
+
+```yaml
+# .github/workflows/ci.yml
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test (worker API + repo integration)
+        run: npm test
+      - name: Build (frontend)
+        run: npm run build
+```
+
+> Note: this file is not committed in the current branch because the GitHub
+> App used to push it lacks the `workflows` permission. Create
+> `.github/workflows/ci.yml` with the content above once that permission is
+> available (or simply add the file in the GitHub web UI).
+
+## Operations cheat-sheet
+
+| Task                         | Command / place                                        |
+| ---------------------------- | ------------------------------------------------------ |
+| Run tests locally            | `npm test`                                             |
+| Apply local D1 migrations    | `npm run db:migrate:local`                             |
+| Inspect local D1             | `npx wrangler d1 execute slams --local --command "SELECT COUNT(*) FROM users;"` |
+| Inspect remote D1            | `npx wrangler d1 execute slams --remote --command "…"` |
+| Rotate JWT secret            | `npx wrangler secret put SLAMS_JWT_SECRET`             |
+| Change allowed CORS origins  | `wrangler.toml` `[vars] ALLOWED_ORIGINS` + `npx wrangler deploy` (or dashboard) |
+| Run a one-off SQL migration  | add a new numbered file in `migrations/`, then `npm run db:migrate:remote` |
 
 ## Troubleshooting
 
-- **`database_id` errors** — make sure you replaced the placeholder in
-  `wrangler.toml` and re-ran `npm run db:migrate:remote`.
-- **Migrations out of sync** — re-run `npm run db:migrate:remote`; Nitro tracks
-  applied migrations in a `_migrations` table on the D1 instance.
-- **404 on a route** — ensure you deployed the full build (`npm run deploy`)
-  rather than only `vite build`; the Worker entry is `.output/server/index.mjs`.
+- **CORS errors in the browser** — the SPA origin is missing from the Worker's
+  `ALLOWED_ORIGINS`. Add it and re-deploy.
+- **`Cannot reach the server`** on the SPA — `VITE_API_URL` is wrong or the
+  Worker isn't deployed; check the Worker URL and that the build happened
+  after the env var was set.
+- **`invalid_credentials` on a fresh DB** — demo seeding is automatic; if you
+  disabled demo accounts in **Admin → Settings**, use a real account.
+- **401 loops after password change** — the SPA clears the stored token on
+  401 and redirects to `/login`; sign in again.

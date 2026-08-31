@@ -1,24 +1,36 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useSuspenseQuery, queryOptions } from "@tanstack/react-query";
-import { adminOverview } from "@/lib/api.functions";
+import { useSuspenseQuery } from "@tanstack/react-query";
+import { adminOverviewQO } from "@/lib/queries";
 import { PageHeader, StatCard } from "@/components/AppShell";
-import { GraduationCap, Users, BookOpen, Building2, PlayCircle, ClipboardCheck } from "lucide-react";
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+import {
+  GraduationCap,
+  Users,
+  BookOpen,
+  Building2,
+  PlayCircle,
+  ClipboardCheck,
+} from "lucide-react";
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+} from "recharts";
 import { useSiteSettings } from "@/lib/useSiteSettings";
 import { RouteTransition } from "@/components/RouteTransition";
 
-const overviewQO = queryOptions({
-  queryKey: ["admin", "overview"],
-  queryFn: () => adminOverview(),
-});
-
 export const Route = createFileRoute("/admin/")({
-  loader: ({ context }) => context.queryClient.ensureQueryData(overviewQO),
+  beforeLoad: async ({ context }) => {
+    await context.queryClient.ensureQueryData(adminOverviewQO);
+  },
   component: AdminOverviewPage,
 });
 
 function AdminOverviewPage() {
-  const { data } = useSuspenseQuery(overviewQO);
+  const { data } = useSuspenseQuery(adminOverviewQO);
   const { data: settings } = useSiteSettings();
   const primary = settings?.primaryColor ?? "oklch(0.44 0.11 165)";
   return (
@@ -39,7 +51,10 @@ function AdminOverviewPage() {
           <p className="text-xs text-muted-foreground">Sign-ins across all courses (last 7 days)</p>
           <div className="mt-4 h-64">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={data.weeklyAttendance} margin={{ left: -20, right: 8, top: 8, bottom: 0 }}>
+              <AreaChart
+                data={data.weeklyAttendance}
+                margin={{ left: -20, right: 8, top: 8, bottom: 0 }}
+              >
                 <defs>
                   <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor={primary} stopOpacity={0.5} />
@@ -48,11 +63,21 @@ function AdminOverviewPage() {
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.9 0.01 165)" />
                 <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-                <YAxis tick={{ fontSize: 12 }} />
+                <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
                 <Tooltip
-                  contentStyle={{ borderRadius: 12, border: "1px solid oklch(0.9 0.01 165)", fontSize: 12 }}
+                  contentStyle={{
+                    borderRadius: 12,
+                    border: "1px solid oklch(0.9 0.01 165)",
+                    fontSize: 12,
+                  }}
                 />
-                <Area type="monotone" dataKey="count" stroke={primary} strokeWidth={2} fill="url(#g1)" />
+                <Area
+                  type="monotone"
+                  dataKey="count"
+                  stroke={primary}
+                  strokeWidth={2}
+                  fill="url(#g1)"
+                />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -72,7 +97,9 @@ function AdminOverviewPage() {
                   </div>
                 </div>
                 <div className="text-right">
-                  <div className="font-mono text-sm">{s.attended}/{s.enrolled}</div>
+                  <div className="font-mono text-sm">
+                    {s.attended}/{s.enrolled}
+                  </div>
                   <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
                     {s.endedAt ? "closed" : "open"}
                   </div>

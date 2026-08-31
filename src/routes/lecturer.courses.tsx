@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useSuspenseQuery, queryOptions } from "@tanstack/react-query";
-import { lecturerCourses } from "@/lib/api.functions";
+import { useSuspenseQuery } from "@tanstack/react-query";
+import { lecturerCoursesQO } from "@/lib/queries";
 import { PageHeader } from "@/components/AppShell";
 import { BookOpen, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,15 +8,15 @@ import { CourseGlyph } from "@/lib/courseIcons";
 import { RouteTransition } from "@/components/RouteTransition";
 import { EmptyState } from "@/components/EmptyState";
 
-const coursesQO = queryOptions({ queryKey: ["lecturer", "courses"], queryFn: () => lecturerCourses() });
-
 export const Route = createFileRoute("/lecturer/courses")({
-  loader: ({ context }) => context.queryClient.ensureQueryData(coursesQO),
+  beforeLoad: async ({ context }) => {
+    await context.queryClient.ensureQueryData(lecturerCoursesQO);
+  },
   component: LecturerCoursesPage,
 });
 
 function LecturerCoursesPage() {
-  const { data: courses } = useSuspenseQuery(coursesQO);
+  const { data: courses } = useSuspenseQuery(lecturerCoursesQO);
   return (
     <>
       <PageHeader title="My Courses" subtitle="Every course assigned to you this semester." />
@@ -45,7 +45,9 @@ function LecturerCoursesPage() {
             </div>
             <div className="mt-4 flex items-center justify-between text-sm">
               <span className="text-muted-foreground">{c.enrolledStudentIds.length} students</span>
-              <Button variant="ghost" size="sm">Open <ArrowRight className="ml-1 h-3.5 w-3.5" /></Button>
+              <Button variant="ghost" size="sm">
+                Open <ArrowRight className="ml-1 h-3.5 w-3.5" />
+              </Button>
             </div>
           </Link>
         ))}
