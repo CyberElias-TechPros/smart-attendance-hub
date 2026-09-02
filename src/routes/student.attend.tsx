@@ -13,12 +13,19 @@ import { ApiClientError, api, errorMessage } from "@/lib/api";
 
 export const Route = createFileRoute("/student/attend")({
   // Accept `?code=` so the lecturer's QR code can deep-link straight here.
+  // Accept `?code=` so the lecturer's QR code can deep-link straight here.
+  // Codes are six digits (see `attendanceCodeSchema`), so keep only digits.
   validateSearch: (search: Record<string, unknown>): { code?: string } =>
-    typeof search.code === "string" ? { code: search.code.slice(0, 12).toUpperCase() } : {},
+    typeof search.code === "string"
+      ? { code: search.code.replace(/\D/g, "").slice(0, CODE_LENGTH) }
+      : {},
   component: AttendPage,
 });
 
 const SCANNER_ELEMENT_ID = "slams-qr-reader";
+
+/** Attendance codes are six digits; mirrors `attendanceCodeSchema`. */
+const CODE_LENGTH = 6;
 
 type GeoState =
   | { status: "idle" }
@@ -119,7 +126,7 @@ function AttendPage() {
 
   const submitMutation = useMutation({
     mutationFn: async (rawCode: string) => {
-      const trimmed = rawCode.trim().toUpperCase();
+      const trimmed = rawCode.replace(/\D/g, "");
       let coords: { latitude: number; longitude: number } | undefined;
 
       // Send coordinates whenever the browser will give them: the server only
@@ -273,8 +280,8 @@ function AttendPage() {
             className="mt-4 space-y-4"
             onSubmit={(event) => {
               event.preventDefault();
-              if (code.trim().length < 4) {
-                toast.error("Enter the full code shown by your lecturer.");
+              if (code.length !== CODE_LENGTH) {
+                toast.error(`Attendance codes are ${CODE_LENGTH} digits.`);
                 return;
               }
               submitMutation.mutate(code);
@@ -285,12 +292,15 @@ function AttendPage() {
               <Input
                 id="attendance-code"
                 value={code}
-                onChange={(event) => setCode(event.target.value.toUpperCase())}
-                placeholder="ABC12345"
-                autoComplete="off"
-                autoCapitalize="characters"
+                onChange={(event) =>
+                  setCode(event.target.value.replace(/\D/g, "").slice(0, CODE_LENGTH))
+                }
+                placeholder="000000"
+                autoComplete="one-time-code"
+                inputMode="numeric"
+                pattern="[0-9]*"
                 spellCheck={false}
-                maxLength={12}
+                maxLength={CODE_LENGTH}
                 className="text-center font-mono text-2xl tracking-[0.3em]"
               />
             </div>
@@ -356,13 +366,12 @@ function AttendPage() {
 /** QR payloads may be a bare code or the full join URL — accept both. */
 function extractCode(decodedText: string): string | null {
   const text = decodedText.trim();
+  let candidate = text;
   try {
-    const url = new URL(text);
-    const fromQuery = url.searchParams.get("code");
-    if (fromQuery) return fromQuery.toUpperCase();
+    candidate = new URL(text).searchParams.get("code") ?? text;
   } catch {
     // Not a URL; fall through to treating it as a raw code.
   }
-  const match = text.toUpperCase().match(/^[A-Z0-9]{4,12}$/);
-  return match ? match[0] : null;
+  const digits = candidate.replace(/\D/g, "");
+  return digits.length === CODE_LENGTH ? digits : null;
 }
