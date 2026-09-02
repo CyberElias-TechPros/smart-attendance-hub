@@ -116,10 +116,7 @@ export async function signToken(claims: SessionClaims, secret: string): Promise<
   return `${data}.${b64urlEncode(new Uint8Array(sig))}`;
 }
 
-export async function verifyToken(
-  token: string,
-  secret: string,
-): Promise<SessionClaims | null> {
+export async function verifyToken(token: string, secret: string): Promise<SessionClaims | null> {
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   const data = `${parts[0]}.${parts[1]}`;

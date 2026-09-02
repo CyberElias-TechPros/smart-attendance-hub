@@ -38,9 +38,7 @@ function SessionsList() {
       header: "Course",
       render: (session) => (
         <div className="min-w-0">
-          <span className="font-mono text-sm font-semibold text-primary">
-            {session.courseCode}
-          </span>
+          <span className="font-mono text-sm font-semibold text-primary">{session.courseCode}</span>
           <span className="block truncate text-xs text-muted-foreground">
             {session.topic ?? session.courseTitle}
           </span>

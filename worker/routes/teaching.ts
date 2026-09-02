@@ -210,10 +210,7 @@ export async function studentCourses(c: RequestContext): Promise<Response> {
   return json({ items: await repo.studentCourses(claims.sub) });
 }
 
-export async function studentCourseDetail(
-  c: RequestContext,
-  courseId: string,
-): Promise<Response> {
+export async function studentCourseDetail(c: RequestContext, courseId: string): Promise<Response> {
   const claims = await requireUser(c, ["student"]);
   const repo = new Repo(c.env.DB);
   if (!(await repo.isEnrolled(courseId, claims.sub))) {

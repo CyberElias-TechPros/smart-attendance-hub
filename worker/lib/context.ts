@@ -110,7 +110,8 @@ export async function requireUser(
     .bind(c.claims.sub)
     .first<{ token_version: number; role: Role; deleted_at: number | null }>();
 
-  if (!row || row.deleted_at != null) throw ApiError.unauthenticated("Your account is no longer active.");
+  if (!row || row.deleted_at != null)
+    throw ApiError.unauthenticated("Your account is no longer active.");
   if (row.token_version !== c.claims.tv) {
     throw ApiError.unauthenticated("Your session has expired. Please sign in again.");
   }

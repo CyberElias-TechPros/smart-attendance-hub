@@ -49,25 +49,25 @@ export function AppShell({
   return (
     <div className="min-h-screen bg-background">
       {/* Mobile top bar */}
-        <div className="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-border/60 bg-background/80 px-4 backdrop-blur lg:hidden">
-          <Link to="/" className="flex items-center gap-2">
-            <div className="grid h-7 w-7 place-items-center rounded-md bg-primary text-primary-foreground">
-              <GraduationCap className="h-4 w-4" />
-            </div>
-            <span className="font-display text-base font-semibold">{institution}</span>
-          </Link>
-          <div className="flex items-center gap-2">
-            <ThemeToggle />
-            <button
-              onClick={() => setOpen((v) => !v)}
-              className="rounded-md p-2 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              aria-label={open ? "Close navigation menu" : "Open navigation menu"}
-              aria-expanded={open}
-            >
-              {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-            </button>
+      <div className="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-border/60 bg-background/80 px-4 backdrop-blur lg:hidden">
+        <Link to="/" className="flex items-center gap-2">
+          <div className="grid h-7 w-7 place-items-center rounded-md bg-primary text-primary-foreground">
+            <GraduationCap className="h-4 w-4" />
           </div>
+          <span className="font-display text-base font-semibold">{institution}</span>
+        </Link>
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <button
+            onClick={() => setOpen((v) => !v)}
+            className="rounded-md p-2 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label={open ? "Close navigation menu" : "Open navigation menu"}
+            aria-expanded={open}
+          >
+            {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </button>
         </div>
+      </div>
 
       <div className="flex">
         {/* Dim + close the drawer when the mobile overlay is tapped. */}
@@ -92,7 +92,9 @@ export function AppShell({
             </div>
             <div>
               <div className="font-display text-base font-semibold leading-none">{institution}</div>
-              <div className="mt-1 text-[10px] uppercase tracking-[0.2em] text-muted-foreground">{role}</div>
+              <div className="mt-1 text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+                {role}
+              </div>
             </div>
           </div>
           <nav className="flex-1 space-y-1 overflow-y-auto p-3">
@@ -184,7 +186,9 @@ export function StatCard({
     <div className="group relative overflow-hidden rounded-2xl border border-border/70 bg-card p-5 shadow-elegant transition duration-300 hover:-translate-y-0.5 hover:shadow-lift">
       <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-primary/70 via-teal-400/60 to-accent/70 opacity-0 transition group-hover:opacity-100" />
       <div className="flex items-center justify-between">
-        <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">{label}</div>
+        <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+          {label}
+        </div>
         {Icon && (
           <div className="grid h-8 w-8 place-items-center rounded-lg bg-primary/10 text-primary">
             <Icon className="h-4 w-4" />

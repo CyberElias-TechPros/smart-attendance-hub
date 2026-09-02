@@ -31,7 +31,10 @@ export const passwordSchema = z
   .regex(/[A-Z]/, "Password must contain an uppercase letter")
   .regex(/\d/, "Password must contain a number");
 export const nameSchema = z.string().trim().min(2, "Name is too short").max(120);
-export const levelSchema = z.string().trim().regex(/^[0-9]{3}$/, "Level must be like 100, 200, 300");
+export const levelSchema = z
+  .string()
+  .trim()
+  .regex(/^[0-9]{3}$/, "Level must be like 100, 200, 300");
 export const matricSchema = z.string().trim().min(2).max(40);
 export const staffIdSchema = z.string().trim().min(2).max(40);
 export const courseCodeSchema = z
@@ -166,8 +169,7 @@ export const startSessionSchema = z
   })
   .refine(
     (v) =>
-      (v.latitude == null && v.longitude == null) ||
-      (v.latitude != null && v.longitude != null),
+      (v.latitude == null && v.longitude == null) || (v.latitude != null && v.longitude != null),
     { message: "Latitude and longitude must be provided together", path: ["latitude"] },
   )
   .refine((v) => v.radiusMeters == null || v.latitude != null, {

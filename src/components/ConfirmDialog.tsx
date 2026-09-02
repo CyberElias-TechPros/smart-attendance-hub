@@ -61,7 +61,9 @@ export function ConfirmDialog({
             onClick={handleConfirm}
             disabled={busy}
             className={
-              destructive ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : ""
+              destructive
+                ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                : ""
             }
           >
             {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}

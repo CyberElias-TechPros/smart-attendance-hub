@@ -3,7 +3,9 @@ import { Skeleton } from "./ui/skeleton";
 
 export function CardSkeleton({ className }: { className?: string }) {
   return (
-    <div className={cn("rounded-2xl border border-border/70 bg-card p-5 shadow-elegant", className)}>
+    <div
+      className={cn("rounded-2xl border border-border/70 bg-card p-5 shadow-elegant", className)}
+    >
       <div className="flex items-start justify-between">
         <div className="space-y-2">
           <Skeleton className="h-3 w-16" />
@@ -23,7 +25,9 @@ export function CardSkeleton({ className }: { className?: string }) {
 
 export function StatSkeleton({ className }: { className?: string }) {
   return (
-    <div className={cn("rounded-2xl border border-border/70 bg-card p-5 shadow-elegant", className)}>
+    <div
+      className={cn("rounded-2xl border border-border/70 bg-card p-5 shadow-elegant", className)}
+    >
       <div className="flex items-center justify-between">
         <Skeleton className="h-3 w-24" />
         <Skeleton className="h-8 w-8 rounded-lg" />

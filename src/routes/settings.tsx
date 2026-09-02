@@ -226,7 +226,11 @@ function PasswordSection({ onChanged }: { onChanged: () => Promise<void> | void 
             return (
               <li
                 key={rule.id}
-                className={met ? "flex items-center gap-1.5 text-success" : "flex items-center gap-1.5 text-muted-foreground"}
+                className={
+                  met
+                    ? "flex items-center gap-1.5 text-success"
+                    : "flex items-center gap-1.5 text-muted-foreground"
+                }
               >
                 {met ? (
                   <Check className="h-3.5 w-3.5" aria-hidden />

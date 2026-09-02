@@ -9,7 +9,15 @@ import {
   Radio,
   Users,
 } from "lucide-react";
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 import { PageHeader, StatCard } from "@/components/AppShell";
 import { EmptyState } from "@/components/EmptyState";
@@ -61,7 +69,8 @@ function AdminOverviewPage() {
                 <Radio className="h-4 w-4 text-success" aria-hidden />
                 <p className="text-sm font-medium">
                   {data.counts.liveSessions} live{" "}
-                  {data.counts.liveSessions === 1 ? "session is" : "sessions are"} running right now.
+                  {data.counts.liveSessions === 1 ? "session is" : "sessions are"} running right
+                  now.
                 </p>
               </div>
             )}

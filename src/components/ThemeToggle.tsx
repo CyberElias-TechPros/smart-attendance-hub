@@ -1,12 +1,17 @@
 import { useEffect, useState } from "react";
 import { Moon, Sun } from "lucide-react";
 
+/** Must match the pre-paint bootstrap script in index.html. */
+const THEME_KEY = "slams:theme";
+
 function applyTheme(theme: "light" | "dark") {
   const root = document.documentElement;
   root.classList.toggle("dark", theme === "dark");
   try {
-    localStorage.setItem("slams-theme", theme);
-  } catch {}
+    localStorage.setItem(THEME_KEY, theme);
+  } catch {
+    // Storage can be unavailable in private mode; the theme still applies for this page view.
+  }
 }
 
 export function ThemeToggle({ className }: { className?: string }) {
@@ -16,10 +21,12 @@ export function ThemeToggle({ className }: { className?: string }) {
   useEffect(() => {
     let initial: "light" | "dark" = "light";
     try {
-      const saved = localStorage.getItem("slams-theme");
+      const saved = localStorage.getItem(THEME_KEY);
       if (saved === "light" || saved === "dark") initial = saved;
       else if (window.matchMedia("(prefers-color-scheme: dark)").matches) initial = "dark";
-    } catch {}
+    } catch {
+      // Fall back to the light theme when storage or matchMedia is blocked.
+    }
     setTheme(initial);
     applyTheme(initial);
     setMounted(true);
@@ -41,7 +48,9 @@ export function ThemeToggle({ className }: { className?: string }) {
         (className ?? "")
       }
     >
-      <span suppressHydrationWarning>{mounted && theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}</span>
+      <span suppressHydrationWarning>
+        {mounted && theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+      </span>
     </button>
   );
 }

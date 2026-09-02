@@ -75,7 +75,9 @@ function SessionPage() {
   // beyond the code the lecturer is already displaying.
   const joinUrl = useMemo(
     () =>
-      session ? `${window.location.origin}/student/attend?code=${encodeURIComponent(session.code)}` : "",
+      session
+        ? `${window.location.origin}/student/attend?code=${encodeURIComponent(session.code)}`
+        : "",
     [session],
   );
 
@@ -232,8 +234,8 @@ function SessionPage() {
                             <div className="min-w-0">
                               <div className="truncate text-sm font-medium">{entry.name}</div>
                               <div className="font-mono text-xs text-muted-foreground">
-                                {entry.matricNo} ·{" "}
-                                {new Date(entry.timestamp).toLocaleTimeString()} · {entry.method}
+                                {entry.matricNo} · {new Date(entry.timestamp).toLocaleTimeString()}{" "}
+                                · {entry.method}
                               </div>
                             </div>
                             <Button
@@ -253,11 +255,12 @@ function SessionPage() {
 
                   <section className="rounded-2xl border border-border/70 bg-card p-5 shadow-elegant">
                     <h2 className="font-display text-lg font-semibold">
-                      Absent <span className="text-muted-foreground">({data.absentees.length})</span>
+                      Absent{" "}
+                      <span className="text-muted-foreground">({data.absentees.length})</span>
                     </h2>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      Mark a student manually if their device failed — this is recorded in the
-                      audit log.
+                      Mark a student manually if their device failed — this is recorded in the audit
+                      log.
                     </p>
                     {data.absentees.length === 0 ? (
                       <p className="mt-4 text-sm text-muted-foreground">

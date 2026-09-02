@@ -74,7 +74,14 @@ function StudentsPage() {
   const studentsQuery = useQuery({
     queryKey: ["admin", "users", "student", { page: effectivePage, search, sort, dir }],
     queryFn: () =>
-      api.listUsers({ role: "student", page: effectivePage, pageSize: PAGE_SIZE, search, sort, dir }),
+      api.listUsers({
+        role: "student",
+        page: effectivePage,
+        pageSize: PAGE_SIZE,
+        search,
+        sort,
+        dir,
+      }),
     placeholderData: keepPreviousData,
   });
 

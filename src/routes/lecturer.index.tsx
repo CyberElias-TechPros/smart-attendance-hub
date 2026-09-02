@@ -46,7 +46,11 @@ function LecturerDashboard() {
               <StatCard label="My courses" value={data.stats.courses} icon={BookOpen} />
               <StatCard label="Students" value={data.stats.enrollments} icon={Users} />
               <StatCard label="Sessions held" value={data.stats.sessions} icon={PlayCircle} />
-              <StatCard label="Total sign-ins" value={data.stats.attendance} icon={ClipboardCheck} />
+              <StatCard
+                label="Total sign-ins"
+                value={data.stats.attendance}
+                icon={ClipboardCheck}
+              />
             </div>
 
             {data.stats.liveSessions > 0 && (

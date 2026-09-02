@@ -1,10 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-import {
-  Link,
-  Outlet,
-  createRootRouteWithContext,
-  useRouter,
-} from "@tanstack/react-router";
+import { Link, Outlet, createRootRouteWithContext, useRouter } from "@tanstack/react-router";
 
 import type { AuthState } from "@/lib/auth";
 import { Toaster } from "@/components/ui/sonner";

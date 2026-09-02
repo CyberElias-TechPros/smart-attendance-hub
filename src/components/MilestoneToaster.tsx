@@ -1,6 +1,11 @@
 import { useEffect } from "react";
 import { toast } from "sonner";
-import { computeMilestones, type Milestone, type MilestoneCourse, type MilestoneSession } from "@/lib/milestones";
+import {
+  computeMilestones,
+  type Milestone,
+  type MilestoneCourse,
+  type MilestoneSession,
+} from "@/lib/milestones";
 
 const STORAGE_KEY = "slams:milestones:seen";
 
@@ -61,7 +66,9 @@ export function MilestoneToaster({
           icon: m.emoji,
           duration: 5000,
           className: "slams-toast",
-          style: { borderLeft: `3px solid var(--${m.tone === "warn" ? "warning" : m.tone === "success" ? "success" : "primary"})` },
+          style: {
+            borderLeft: `3px solid var(--${m.tone === "warn" ? "warning" : m.tone === "success" ? "success" : "primary"})`,
+          },
         });
       }, i * 250);
     });

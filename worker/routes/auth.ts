@@ -1,8 +1,4 @@
-import {
-  changePasswordSchema,
-  loginSchema,
-  updateProfileSchema,
-} from "../../shared/schemas";
+import { changePasswordSchema, loginSchema, updateProfileSchema } from "../../shared/schemas";
 import { audit } from "../lib/audit";
 import {
   buildClearCookies,
@@ -99,9 +95,7 @@ export async function handleLogin(c: RequestContext): Promise<Response> {
   }
 
   // Transparently upgrade legacy/weak password hashes on successful login.
-  const rehashed = needsRehash(user.password_hash)
-    ? await hashPassword(body.password)
-    : undefined;
+  const rehashed = needsRehash(user.password_hash) ? await hashPassword(body.password) : undefined;
   await repo.recordLoginSuccess(user.id, rehashed);
 
   await issueSession(c, {

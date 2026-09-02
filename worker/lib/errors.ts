@@ -63,14 +63,19 @@ export function fieldsFromZod(error: z.ZodError): Record<string, string> {
   return fields;
 }
 
-export function toErrorBody(error: unknown, requestId: string): {
+export function toErrorBody(
+  error: unknown,
+  requestId: string,
+): {
   status: number;
   body: ApiErrorBody;
 } {
   if (error instanceof ApiError) {
     return {
       status: error.status,
-      body: { error: { code: error.code, message: error.message, fields: error.fields, requestId } },
+      body: {
+        error: { code: error.code, message: error.message, fields: error.fields, requestId },
+      },
     };
   }
   if (error instanceof z.ZodError) {

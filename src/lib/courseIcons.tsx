@@ -108,7 +108,8 @@ export function CourseGlyph({
         : size === "xl"
           ? "h-20 w-20 rounded-3xl"
           : "h-11 w-11 rounded-xl";
-  const iconSize = size === "sm" ? "h-4 w-4" : size === "lg" ? "h-7 w-7" : size === "xl" ? "h-9 w-9" : "h-5 w-5";
+  const iconSize =
+    size === "sm" ? "h-4 w-4" : size === "lg" ? "h-7 w-7" : size === "xl" ? "h-9 w-9" : "h-5 w-5";
 
   return (
     <div

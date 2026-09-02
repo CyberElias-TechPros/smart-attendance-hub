@@ -62,8 +62,7 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
       : "We couldn't load this";
 
   const description =
-    api?.message ??
-    (error instanceof Error ? error.message : "An unexpected error occurred.");
+    api?.message ?? (error instanceof Error ? error.message : "An unexpected error occurred.");
 
   return (
     <EmptyState

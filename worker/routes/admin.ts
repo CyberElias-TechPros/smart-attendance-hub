@@ -133,7 +133,12 @@ export async function createDepartment(c: RequestContext): Promise<Response> {
   const body = await readJson(c.request, departmentInputSchema);
   const repo = new Repo(c.env.DB);
   const id = await repo.createDepartment(body);
-  audit(c, { action: "department.created", resource: "department", resourceId: id, metadata: body });
+  audit(c, {
+    action: "department.created",
+    resource: "department",
+    resourceId: id,
+    metadata: body,
+  });
   return json({ id }, { status: 201 });
 }
 
@@ -143,7 +148,12 @@ export async function updateDepartment(c: RequestContext, id: string): Promise<R
   const body = await readJson(c.request, departmentInputSchema);
   const repo = new Repo(c.env.DB);
   await repo.updateDepartment(id, body);
-  audit(c, { action: "department.updated", resource: "department", resourceId: id, metadata: body });
+  audit(c, {
+    action: "department.updated",
+    resource: "department",
+    resourceId: id,
+    metadata: body,
+  });
   return json({ ok: true });
 }
 

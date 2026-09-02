@@ -67,7 +67,9 @@ async function main() {
       process.exit(1);
     }
     if (password.length < 12) {
-      console.error("Refusing to seed: choose an administrator password of at least 12 characters.");
+      console.error(
+        "Refusing to seed: choose an administrator password of at least 12 characters.",
+      );
       process.exit(1);
     }
     const hash = await hashPassword(password);
@@ -93,7 +95,13 @@ VALUES ('site', 'SLAMS', 70, '[]', '[]', 0, '', 'example.edu', 0, NULL, NULL);`,
   const domain = arg("demo-domain") ?? "slams.edu";
 
   const departments = [
-    { id: id(8), name: "Computer Science", code: "CSC", icon: "Code2", color: "oklch(0.5 0.18 250)" },
+    {
+      id: id(8),
+      name: "Computer Science",
+      code: "CSC",
+      icon: "Code2",
+      color: "oklch(0.5 0.18 250)",
+    },
     { id: id(8), name: "Mathematics", code: "MTH", icon: "Sigma", color: "oklch(0.6 0.16 60)" },
     {
       id: id(8),

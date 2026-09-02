@@ -68,13 +68,26 @@ function Header({ institutionName }: { institutionName: string }) {
           <div className="grid h-8 w-8 place-items-center rounded-lg bg-primary-gradient text-primary-foreground shadow-glow">
             <GraduationCap className="h-4 w-4" />
           </div>
-          <span className="font-display text-lg font-semibold tracking-tight">{institutionName}</span>
+          <span className="font-display text-lg font-semibold tracking-tight">
+            {institutionName}
+          </span>
         </Link>
         <nav className="hidden items-center gap-8 text-sm md:flex">
-          <a href="#features" className="text-muted-foreground transition hover:text-foreground">Features</a>
-          <a href="#how" className="text-muted-foreground transition hover:text-foreground">How it works</a>
-          <a href="#roles" className="text-muted-foreground transition hover:text-foreground">For</a>
-          <a href="#testimonials" className="text-muted-foreground transition hover:text-foreground">Stories</a>
+          <a href="#features" className="text-muted-foreground transition hover:text-foreground">
+            Features
+          </a>
+          <a href="#how" className="text-muted-foreground transition hover:text-foreground">
+            How it works
+          </a>
+          <a href="#roles" className="text-muted-foreground transition hover:text-foreground">
+            For
+          </a>
+          <a
+            href="#testimonials"
+            className="text-muted-foreground transition hover:text-foreground"
+          >
+            Stories
+          </a>
         </nav>
         <div className="flex items-center gap-2">
           <ThemeToggle />
@@ -111,8 +124,8 @@ function Hero({ showFakeStats }: { showFakeStats: boolean }) {
             Retire the <span className="gradient-text">paper attendance</span> sheet.
           </h1>
           <p className="mt-5 max-w-lg text-balance text-lg text-muted-foreground">
-            SLAMS turns any lecture hall into a secure, digital attendance loop — unique QR
-            codes, GPS verification, and automatic percentages, without spreadsheets.
+            SLAMS turns any lecture hall into a secure, digital attendance loop — unique QR codes,
+            GPS verification, and automatic percentages, without spreadsheets.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
             <Link
@@ -154,7 +167,10 @@ function Hero({ showFakeStats }: { showFakeStats: boolean }) {
         </div>
 
         <div className="relative animate-fade-up">
-          <Orb className="left-1/2 top-1/2 h-64 w-64 -translate-x-1/2 -translate-y-1/2" color="oklch(0.78 0.14 90 / 0.3)" />
+          <Orb
+            className="left-1/2 top-1/2 h-64 w-64 -translate-x-1/2 -translate-y-1/2"
+            color="oklch(0.78 0.14 90 / 0.3)"
+          />
           <div className="relative rounded-3xl border border-border/70 bg-card/80 p-6 shadow-lift backdrop-blur-xl">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span className="font-mono uppercase tracking-widest">Live session</span>
@@ -220,9 +236,12 @@ function LogoMarquee({ items }: { items?: string[] }) {
           Trusted by faculties running SLAMS
         </p>
         <div className="relative mt-4 overflow-hidden [mask-image:linear-gradient(to_right,transparent,black_12%,black_88%,transparent)]">
-           <div className="flex w-max animate-marquee gap-10">
-             {[...list, ...list].map((i, idx) => (
-              <span key={idx} className="whitespace-nowrap font-display text-sm font-medium text-muted-foreground/80">
+          <div className="flex w-max animate-marquee gap-10">
+            {[...list, ...list].map((i, idx) => (
+              <span
+                key={idx}
+                className="whitespace-nowrap font-display text-sm font-medium text-muted-foreground/80"
+              >
                 {i}
               </span>
             ))}
@@ -235,12 +254,36 @@ function LogoMarquee({ items }: { items?: string[] }) {
 
 function Features() {
   const features = [
-    { icon: QrCode, title: "One-time QR codes", body: "Each session generates a unique code that expires automatically — a fresh code every time, so a reused screenshot won't validate." },
-    { icon: MapPin, title: "GPS verification", body: "Optional geo-fence ensures students are inside the lecture venue before their sign-in is accepted." },
-    { icon: ShieldCheck, title: "Duplicate blocked", body: "One student, one sign-in per session — enforced at the database level, not by trust." },
-    { icon: BarChart3, title: "Live analytics", body: "Watch the attendance curve build during the lecture and drill down by student in real time." },
-    { icon: FileText, title: "PDF & Excel exports", body: "Semester-end reports ready to email or print — grouped by course, department, or student." },
-    { icon: Clock, title: "Automatic percentages", body: "Attendance percentages update the second a session closes. No spreadsheet gymnastics." },
+    {
+      icon: QrCode,
+      title: "One-time QR codes",
+      body: "Each session generates a unique code that expires automatically — a fresh code every time, so a reused screenshot won't validate.",
+    },
+    {
+      icon: MapPin,
+      title: "GPS verification",
+      body: "Optional geo-fence ensures students are inside the lecture venue before their sign-in is accepted.",
+    },
+    {
+      icon: ShieldCheck,
+      title: "Duplicate blocked",
+      body: "One student, one sign-in per session — enforced at the database level, not by trust.",
+    },
+    {
+      icon: BarChart3,
+      title: "Live analytics",
+      body: "Watch the attendance curve build during the lecture and drill down by student in real time.",
+    },
+    {
+      icon: FileText,
+      title: "PDF & Excel exports",
+      body: "Semester-end reports ready to email or print — grouped by course, department, or student.",
+    },
+    {
+      icon: Clock,
+      title: "Automatic percentages",
+      body: "Attendance percentages update the second a session closes. No spreadsheet gymnastics.",
+    },
   ];
   return (
     <section id="features" className="mx-auto max-w-6xl px-6 py-24">
@@ -248,8 +291,13 @@ function Features() {
         <p className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1 text-xs font-medium uppercase tracking-[0.2em] text-primary">
           <Sparkles className="h-3 w-3" /> Platform
         </p>
-        <h2 className="mt-4 font-display text-4xl font-semibold tracking-tight">Everything a modern faculty needs.</h2>
-        <p className="mt-3 text-muted-foreground">Purpose-built for high-frequency lectures, large cohorts, and the messy reality of shared halls.</p>
+        <h2 className="mt-4 font-display text-4xl font-semibold tracking-tight">
+          Everything a modern faculty needs.
+        </h2>
+        <p className="mt-3 text-muted-foreground">
+          Purpose-built for high-frequency lectures, large cohorts, and the messy reality of shared
+          halls.
+        </p>
       </div>
       <div className="mt-12 grid gap-4 md:grid-cols-3">
         {features.map((f, i) => (
@@ -273,19 +321,36 @@ function Features() {
 
 function HowItWorks() {
   const steps = [
-    { n: "01", t: "Lecturer opens session", d: "Selects the course, sets duration, optionally locks it to a GPS radius." },
-    { n: "02", t: "Students sign in", d: "Scan the QR or type the 6-digit code on any phone browser — no app install." },
-    { n: "03", t: "Session closes", d: "Attendance is frozen. Percentages recompute instantly across the semester." },
+    {
+      n: "01",
+      t: "Lecturer opens session",
+      d: "Selects the course, sets duration, optionally locks it to a GPS radius.",
+    },
+    {
+      n: "02",
+      t: "Students sign in",
+      d: "Scan the QR or type the 6-digit code on any phone browser — no app install.",
+    },
+    {
+      n: "03",
+      t: "Session closes",
+      d: "Attendance is frozen. Percentages recompute instantly across the semester.",
+    },
   ];
   return (
     <section id="how" className="relative border-y border-border/60 bg-secondary/40">
       <div className="mx-auto max-w-6xl px-6 py-24">
         <div className="max-w-2xl">
           <p className="text-xs font-medium uppercase tracking-[0.25em] text-primary">Workflow</p>
-          <h2 className="mt-3 font-display text-4xl font-semibold tracking-tight">A lecture in three moves.</h2>
+          <h2 className="mt-3 font-display text-4xl font-semibold tracking-tight">
+            A lecture in three moves.
+          </h2>
         </div>
         <div className="relative mt-12 grid gap-6 md:grid-cols-3">
-          <div aria-hidden className="absolute left-0 right-0 top-9 hidden h-px bg-gradient-to-r from-primary/40 via-primary/20 to-transparent md:block" />
+          <div
+            aria-hidden
+            className="absolute left-0 right-0 top-9 hidden h-px bg-gradient-to-r from-primary/40 via-primary/20 to-transparent md:block"
+          />
           {steps.map((s) => (
             <div key={s.n} className="relative">
               <div className="flex items-center gap-3">
@@ -305,15 +370,44 @@ function HowItWorks() {
 
 function Roles() {
   const roles = [
-    { icon: ShieldCheck, t: "Administrators", pts: ["Register students & lecturers", "Manage departments and courses", "Assign lecturers", "Faculty-wide reports"] },
-    { icon: BookOpen, t: "Lecturers", pts: ["Start & end sessions", "Live QR + code display", "Per-student analytics", "Export to PDF/Excel"] },
-    { icon: Users, t: "Students", pts: ["Scan QR or type code", "See course-by-course %", "History with timestamps", "Works on any phone"] },
+    {
+      icon: ShieldCheck,
+      t: "Administrators",
+      pts: [
+        "Register students & lecturers",
+        "Manage departments and courses",
+        "Assign lecturers",
+        "Faculty-wide reports",
+      ],
+    },
+    {
+      icon: BookOpen,
+      t: "Lecturers",
+      pts: [
+        "Start & end sessions",
+        "Live QR + code display",
+        "Per-student analytics",
+        "Export to PDF/Excel",
+      ],
+    },
+    {
+      icon: Users,
+      t: "Students",
+      pts: [
+        "Scan QR or type code",
+        "See course-by-course %",
+        "History with timestamps",
+        "Works on any phone",
+      ],
+    },
   ];
   return (
     <section id="roles" className="mx-auto max-w-6xl px-6 py-24">
       <div className="max-w-2xl">
         <p className="text-xs font-medium uppercase tracking-[0.25em] text-primary">Built for</p>
-        <h2 className="mt-3 font-display text-4xl font-semibold tracking-tight">Every role in the faculty.</h2>
+        <h2 className="mt-3 font-display text-4xl font-semibold tracking-tight">
+          Every role in the faculty.
+        </h2>
       </div>
       <div className="mt-12 grid gap-4 md:grid-cols-3">
         {roles.map((r, i) => (
@@ -341,16 +435,25 @@ function Roles() {
   );
 }
 
-function Testimonials({ testimonials }: { testimonials?: { name: string; role: string; text: string }[] }) {
+function Testimonials({
+  testimonials,
+}: {
+  testimonials?: { name: string; role: string; text: string }[];
+}) {
   if (!testimonials || testimonials.length === 0) return null;
   const items = testimonials;
   return (
     <section id="testimonials" className="border-y border-border/60 bg-secondary/40">
       <div className="mx-auto max-w-6xl px-6 py-24">
-        <h2 className="font-display text-3xl font-semibold tracking-tight">Loved by lecturers and students alike.</h2>
+        <h2 className="font-display text-3xl font-semibold tracking-tight">
+          Loved by lecturers and students alike.
+        </h2>
         <div className="mt-10 grid gap-4 md:grid-cols-3">
           {items.map((t) => (
-            <figure key={t.name} className="flex flex-col rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
+            <figure
+              key={t.name}
+              className="flex flex-col rounded-2xl border border-border/70 bg-card p-6 shadow-elegant"
+            >
               <div className="flex gap-0.5 text-accent">
                 {Array.from({ length: 5 }).map((_, i) => (
                   <Star key={i} className="h-4 w-4 fill-current" />
@@ -372,7 +475,11 @@ function Testimonials({ testimonials }: { testimonials?: { name: string; role: s
   );
 }
 
-function CTA({ settings }: { settings?: { demoAccountsEnabled?: boolean; demoEmailDomain?: string; institutionName?: string } }) {
+function CTA({
+  settings,
+}: {
+  settings?: { demoAccountsEnabled?: boolean; demoEmailDomain?: string; institutionName?: string };
+}) {
   const domain = settings?.demoEmailDomain ?? "slams.edu";
   // Demo mode is opt-in and off by default; passwords are never published here.
   const demoOn = settings?.demoAccountsEnabled ?? false;
@@ -408,7 +515,9 @@ function CTA({ settings }: { settings?: { demoAccountsEnabled?: boolean; demoEma
           <div className="relative mt-8 grid gap-3 text-sm sm:grid-cols-3">
             {demos.map((x) => (
               <div key={x.r} className="rounded-xl bg-background/10 p-3 backdrop-blur">
-                <div className="text-xs uppercase tracking-widest text-primary-foreground/70">{x.r}</div>
+                <div className="text-xs uppercase tracking-widest text-primary-foreground/70">
+                  {x.r}
+                </div>
                 <div className="mt-1 font-mono">{x.e}</div>
               </div>
             ))}
@@ -427,7 +536,9 @@ function Footer({ institutionName }: { institutionName: string }) {
           <GraduationCap className="h-4 w-4" />
           <span>{institutionName} · Smart Lecture Attendance Management System</span>
         </div>
-        <div>© {new Date().getFullYear()} {institutionName}. Built for universities.</div>
+        <div>
+          © {new Date().getFullYear()} {institutionName}. Built for universities.
+        </div>
       </div>
     </footer>
   );

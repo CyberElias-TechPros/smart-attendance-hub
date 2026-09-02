@@ -14,9 +14,7 @@ import { ApiClientError, api, errorMessage } from "@/lib/api";
 export const Route = createFileRoute("/student/attend")({
   // Accept `?code=` so the lecturer's QR code can deep-link straight here.
   validateSearch: (search: Record<string, unknown>): { code?: string } =>
-    typeof search.code === "string"
-      ? { code: search.code.slice(0, 12).toUpperCase() }
-      : {},
+    typeof search.code === "string" ? { code: search.code.slice(0, 12).toUpperCase() } : {},
   component: AttendPage,
 });
 
@@ -52,7 +50,8 @@ function geoErrorMessage(error: unknown): string {
   const code = (error as GeolocationPositionError | undefined)?.code;
   if (code === 1)
     return "Location permission denied. Enable location for this site, then try again.";
-  if (code === 2) return "Your location is unavailable right now. Move somewhere with a clearer signal.";
+  if (code === 2)
+    return "Your location is unavailable right now. Move somewhere with a clearer signal.";
   if (code === 3) return "Finding your location timed out. Try again.";
   return error instanceof Error ? error.message : "Could not determine your location.";
 }
@@ -141,7 +140,10 @@ function AttendPage() {
     },
     onSuccess: async (result) => {
       await stopScanner();
-      setSuccess({ course: `${result.course.code} — ${result.course.title}`, at: result.timestamp });
+      setSuccess({
+        course: `${result.course.code} — ${result.course.title}`,
+        at: result.timestamp,
+      });
       setCode("");
       toast.success(`Signed in to ${result.course.code}`);
       queryClient.invalidateQueries({ queryKey: ["student"] });
@@ -153,11 +155,7 @@ function AttendPage() {
     onError: (error) => {
       const message = errorMessage(error);
       // A geofence rejection is much clearer when paired with why location failed.
-      if (
-        error instanceof ApiClientError &&
-        error.status === 403 &&
-        geo.status === "error"
-      ) {
+      if (error instanceof ApiClientError && error.status === 403 && geo.status === "error") {
         toast.error(`${message} (${geo.message})`);
         return;
       }
@@ -239,9 +237,7 @@ function AttendPage() {
           <div
             id={SCANNER_ELEMENT_ID}
             className={
-              scanning
-                ? "mt-4 overflow-hidden rounded-xl border border-border/60"
-                : "sr-only"
+              scanning ? "mt-4 overflow-hidden rounded-xl border border-border/60" : "sr-only"
             }
           />
 

@@ -5,11 +5,7 @@
 // rate-limit counters) and R2 (generated exports).
 
 import { ApiError, toErrorBody } from "./lib/errors";
-import {
-  loadClaims,
-  type Env,
-  type RequestContext,
-} from "./lib/context";
+import { loadClaims, type Env, type RequestContext } from "./lib/context";
 import { clientIp, corsHeaders, json, securityHeaders } from "./lib/http";
 import { Repo } from "./lib/repo";
 import * as auth from "./routes/auth";
@@ -174,9 +170,7 @@ export default {
 
     if (!env.SESSION_SECRET || env.SESSION_SECRET.length < 32) {
       // Fail closed: a missing/short signing secret means forgeable sessions.
-      console.error(
-        JSON.stringify({ level: "error", event: "missing_session_secret", requestId }),
-      );
+      console.error(JSON.stringify({ level: "error", event: "missing_session_secret", requestId }));
       return finish(
         json(
           {
@@ -270,9 +264,7 @@ export default {
         const repo = new Repo(env.DB);
         const closed = await repo.closeExpiredSessions();
         const pruned = await repo.pruneAudit(180);
-        console.log(
-          JSON.stringify({ level: "info", event: "cron_maintenance", closed, pruned }),
-        );
+        console.log(JSON.stringify({ level: "info", event: "cron_maintenance", closed, pruned }));
       })(),
     );
   },

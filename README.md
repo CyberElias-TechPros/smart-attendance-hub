@@ -24,27 +24,27 @@ on **Cloudflare Workers + D1** (zero-config, globally distributed, cheap).
 
 ## Tech stack
 
-| Layer        | Choice                                                        |
-| ------------ | ------------------------------------------------------------- |
-| Framework    | [TanStack Start](https://tanstack.com/start) (React 19, SSR)  |
-| Routing      | TanStack Router (file-based)                                  |
-| UI           | Tailwind CSS v4 + shadcn/ui primitives + Radix                |
-| Charts       | Recharts                                                       |
-| QR           | `qrcode` (generate) + `html5-qrcode` (scan)                   |
-| Auth         | `jose` (JWT) + Web Crypto PBKDF2                               |
-| Reports      | `jspdf` + `jspdf-autotable` + `xlsx`                           |
-| Database     | **Cloudflare D1** (SQLite) — with in-memory fallback for local dev |
-| Hosting      | Cloudflare Workers (Nitro `cloudflare_module` preset) + Pages |
+| Layer     | Choice                                                             |
+| --------- | ------------------------------------------------------------------ |
+| Framework | [TanStack Start](https://tanstack.com/start) (React 19, SSR)       |
+| Routing   | TanStack Router (file-based)                                       |
+| UI        | Tailwind CSS v4 + shadcn/ui primitives + Radix                     |
+| Charts    | Recharts                                                           |
+| QR        | `qrcode` (generate) + `html5-qrcode` (scan)                        |
+| Auth      | `jose` (JWT) + Web Crypto PBKDF2                                   |
+| Reports   | `jspdf` + `jspdf-autotable` + `xlsx`                               |
+| Database  | **Cloudflare D1** (SQLite) — with in-memory fallback for local dev |
+| Hosting   | Cloudflare Workers (Nitro `cloudflare_module` preset) + Pages      |
 
 ## Demo accounts
 
 The database auto-seeds on first run (locally or after migrations). Sign in with:
 
-| Role      | Email                 | Password      |
-| --------- | --------------------- | ------------- |
-| Admin     | `admin@slams.edu`     | `password123` |
-| Lecturer  | `lecturer@slams.edu`  | `password123` |
-| Student   | `student@slams.edu`   | `password123` |
+| Role     | Email                | Password      |
+| -------- | -------------------- | ------------- |
+| Admin    | `admin@slams.edu`    | `password123` |
+| Lecturer | `lecturer@slams.edu` | `password123` |
+| Student  | `student@slams.edu`  | `password123` |
 
 > The admin can register additional students/lecturers, create departments &
 > courses, assign lecturers, and enroll students.

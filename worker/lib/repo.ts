@@ -403,7 +403,9 @@ export class Repo {
   }
 
   async countAdmins(): Promise<number> {
-    return this.count("SELECT COUNT(*) AS c FROM users WHERE role = 'admin' AND deleted_at IS NULL");
+    return this.count(
+      "SELECT COUNT(*) AS c FROM users WHERE role = 'admin' AND deleted_at IS NULL",
+    );
   }
 
   // ── Departments ───────────────────────────────────────────────────────────
@@ -514,7 +516,10 @@ export class Repo {
     description?: string | null;
   }): Promise<string> {
     const dept = await this.first("SELECT id FROM departments WHERE id = ?", [input.departmentId]);
-    if (!dept) throw ApiError.validation("Choose a valid department.", { departmentId: "Unknown department" });
+    if (!dept)
+      throw ApiError.validation("Choose a valid department.", {
+        departmentId: "Unknown department",
+      });
     const id = randomId(8);
     const now = Date.now();
     try {
@@ -542,10 +547,7 @@ export class Repo {
     return id;
   }
 
-  async updateCourse(
-    id: string,
-    input: Parameters<Repo["createCourse"]>[0],
-  ): Promise<void> {
+  async updateCourse(id: string, input: Parameters<Repo["createCourse"]>[0]): Promise<void> {
     const existing = await this.first("SELECT id FROM courses WHERE id = ?", [id]);
     if (!existing) throw ApiError.notFound("That course no longer exists.");
     try {
@@ -576,7 +578,9 @@ export class Repo {
    * sessions exist — the course can be archived instead.
    */
   async deleteCourse(id: string): Promise<void> {
-    const sessions = await this.count("SELECT COUNT(*) AS c FROM sessions WHERE course_id = ?", [id]);
+    const sessions = await this.count("SELECT COUNT(*) AS c FROM sessions WHERE course_id = ?", [
+      id,
+    ]);
     if (sessions > 0) {
       throw ApiError.conflict(
         "This course has attendance history and cannot be deleted. Archive it instead.",
@@ -602,7 +606,8 @@ export class Repo {
         "SELECT id FROM users WHERE id = ? AND role = 'lecturer' AND deleted_at IS NULL",
         [lecturerId],
       );
-      if (!lec) throw ApiError.validation("Choose a valid lecturer.", { lecturerId: "Unknown lecturer" });
+      if (!lec)
+        throw ApiError.validation("Choose a valid lecturer.", { lecturerId: "Unknown lecturer" });
     }
     const res = await this.run("UPDATE courses SET lecturer_id = ?, updated_at = ? WHERE id = ?", [
       lecturerId,
@@ -929,11 +934,7 @@ export class Repo {
   }
 
   /** Lecturer override: mark an enrolled student present for their own session. */
-  async markAttendance(
-    sessionId: string,
-    studentId: string,
-    recordedBy: string,
-  ): Promise<void> {
+  async markAttendance(sessionId: string, studentId: string, recordedBy: string): Promise<void> {
     const session = await this.getSession(sessionId);
     if (!session) throw ApiError.notFound("That session no longer exists.");
     if (!(await this.isEnrolled(session.courseId, studentId))) {
@@ -1318,7 +1319,9 @@ export class Repo {
         action: r.action as string,
         resource: r.resource as string,
         resourceId: (r.resource_id as string) ?? undefined,
-        metadata: r.metadata ? (JSON.parse(r.metadata as string) as Record<string, unknown>) : undefined,
+        metadata: r.metadata
+          ? (JSON.parse(r.metadata as string) as Record<string, unknown>)
+          : undefined,
         createdAt: Number(r.created_at),
       })),
       total,

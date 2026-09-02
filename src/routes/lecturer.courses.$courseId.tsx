@@ -151,10 +151,7 @@ function CourseDetail() {
               actions={
                 liveSession ? (
                   <Button asChild>
-                    <Link
-                      to="/lecturer/sessions/$sessionId"
-                      params={{ sessionId: liveSession.id }}
-                    >
+                    <Link to="/lecturer/sessions/$sessionId" params={{ sessionId: liveSession.id }}>
                       <Radio className="mr-2 h-4 w-4" /> Open live session
                     </Link>
                   </Button>
@@ -171,9 +168,7 @@ function CourseDetail() {
               <StatCard label="Sessions held" value={data.report?.totalSessions ?? 0} />
               <StatCard
                 label="At risk"
-                value={
-                  (data.report?.students ?? []).filter((s) => s.percentage < threshold).length
-                }
+                value={(data.report?.students ?? []).filter((s) => s.percentage < threshold).length}
               />
             </div>
 
