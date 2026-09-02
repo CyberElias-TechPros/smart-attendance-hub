@@ -1,169 +1,159 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useSuspenseQuery, queryOptions, useQuery, useQueries } from "@tanstack/react-query";
-import {
-  studentCourses,
-  studentCourseSessions,
-  studentHistory,
-  listOpenSessionsForStudent,
-} from "@/lib/api.functions";
+import { useQuery } from "@tanstack/react-query";
+import { Link, createFileRoute } from "@tanstack/react-router";
+import { AlertTriangle, BookOpen, QrCode, Radio } from "lucide-react";
+
 import { PageHeader, StatCard } from "@/components/AppShell";
-import { Progress } from "@/components/ui/progress";
-import { BookOpen, QrCode, AlertTriangle, CheckCircle2, Radio, Clock } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { CourseGlyph } from "@/lib/courseIcons";
-import { useAtRiskThreshold, useSiteSettings } from "@/lib/useSiteSettings";
-import { MilestoneToaster } from "@/components/MilestoneToaster";
-import { RouteTransition } from "@/components/RouteTransition";
-import { CardSkeleton } from "@/components/Loaders";
 import { EmptyState } from "@/components/EmptyState";
+import { QueryBoundary } from "@/components/QueryBoundary";
+import { RouteTransition } from "@/components/RouteTransition";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
+import { api } from "@/lib/api";
+import { useAtRiskThreshold } from "@/lib/useSiteSettings";
 
-const coursesQO = queryOptions({ queryKey: ["student", "courses"], queryFn: () => studentCourses() });
-const historyQO = queryOptions({ queryKey: ["student", "history"], queryFn: () => studentHistory() });
-const openSessionsQO = queryOptions({ queryKey: ["student", "open-sessions"], queryFn: () => listOpenSessionsForStudent() });
-
-export const Route = createFileRoute("/student/")({
-  loader: ({ context }) => {
-    context.queryClient.ensureQueryData(coursesQO);
-    context.queryClient.ensureQueryData(historyQO);
-  },
-  component: StudentDashboard,
-});
+export const Route = createFileRoute("/student/")({ component: StudentDashboard });
 
 function StudentDashboard() {
-  const { data: courses } = useSuspenseQuery(coursesQO);
-  const { data: history } = useSuspenseQuery(historyQO);
   const threshold = useAtRiskThreshold();
-  const { data: settings } = useSiteSettings();
-  const { data: openSessions, isLoading: openLoading } = useQuery(openSessionsQO);
 
-  const sessionQueries = useQueries({
-    queries: courses.map((c) => ({
-      queryKey: ["student", "sessions", c.id],
-      queryFn: () => studentCourseSessions({ data: { courseId: c.id } }),
-    })),
+  const coursesQuery = useQuery({
+    queryKey: ["student", "courses"],
+    queryFn: () => api.studentCourses(),
+  });
+  const openQuery = useQuery({
+    queryKey: ["student", "openSessions"],
+    queryFn: () => api.studentOpenSessions(),
+    refetchInterval: 30_000,
   });
 
-  const sessionsByCourse: Record<string, { id: string; attended: boolean; timestamp?: number | null }[]> = {};
-  courses.forEach((c, i) => {
-    const sessions = (sessionQueries[i].data ?? []) as Array<{ id: string; startedAt: number; expiresAt?: number; endedAt?: number }>;
-    sessionsByCourse[c.id] = sessions.map((s) => ({
-      id: s.id,
-      timestamp: s.startedAt,
-      attended: history.some(
-        (h) => h.courseCode === c.code && h.timestamp >= s.startedAt && h.timestamp <= (s.expiresAt ?? s.startedAt),
-      ),
-    }));
-  });
-
-  const historyForToast = history.map((h) => ({ timestamp: h.timestamp, courseId: courses.find((c) => c.code === h.courseCode)?.id ?? h.courseCode }));
-  const coursesForToast = courses.map((c) => ({
-    id: c.id,
-    code: c.code,
-    title: c.title,
-    percentage: c.percentage,
-    totalSessions: c.totalSessions,
-    attendedSessions: c.attendedSessions,
-  }));
-
-  const avg = courses.length === 0 ? 0 : Math.round(courses.reduce((a, c) => a + c.percentage, 0) / courses.length);
-  const atRisk = courses.filter((c) => c.percentage < threshold).length;
+  const courses = coursesQuery.data?.items ?? [];
+  const overall =
+    courses.length > 0
+      ? Math.round(courses.reduce((sum, course) => sum + course.percentage, 0) / courses.length)
+      : 0;
+  const atRisk = courses.filter((course) => course.percentage < threshold);
+  const openSessions = (openQuery.data?.items ?? []).filter(
+    (session) => !session.alreadySignedIn && session.expiresAt > Date.now(),
+  );
 
   return (
-    <>
-      <MilestoneToaster courses={coursesForToast} sessionsByCourse={sessionsByCourse} history={historyForToast} threshold={threshold} />
-
+    <RouteTransition>
       <PageHeader
-        title="My Courses"
-        subtitle="Your live attendance for the semester."
+        title="My courses"
+        subtitle="Track your attendance and sign in to live sessions."
         actions={
-          <Link to="/student/attend">
-            <Button>
-              <QrCode className="mr-2 h-4 w-4" /> Sign in to a lecture
-            </Button>
-          </Link>
+          <Button asChild>
+            <Link to="/student/attend">
+              <QrCode className="mr-2 h-4 w-4" /> Sign in to a session
+            </Link>
+          </Button>
         }
       />
 
-      {openLoading ? (
-        <CardSkeleton className="mb-8" />
-      ) : openSessions && openSessions.length > 0 ? (
-        <div className="mb-8 grid gap-3 sm:grid-cols-2">
-          {openSessions.map((s) => (
-            <Link
-              key={s.sessionId}
-              to="/student/attend"
-              className="flex items-center gap-4 rounded-2xl border border-primary/30 bg-primary/5 p-4 shadow-elegant transition hover:bg-primary/10"
-            >
-              <div className="grid h-11 w-11 place-items-center rounded-xl bg-primary text-primary-foreground animate-pulse-ring">
-                <Radio className="h-5 w-5" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="font-mono text-xs text-muted-foreground">{s.courseCode}</div>
-                <div className="truncate font-display font-semibold">{s.courseTitle}</div>
-              </div>
-              <div className="text-right">
-                <div className="font-mono text-lg font-semibold tracking-widest">{s.code}</div>
-                <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <Clock className="h-3 w-3" /> <Countdown expiresAt={s.expiresAt} />
+      {openSessions.length > 0 && (
+        <div className="mb-6 rounded-2xl border border-success/40 bg-success/5 p-5">
+          <div className="flex items-center gap-2 text-sm font-semibold text-success">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-70" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
+            </span>
+            <Radio className="h-4 w-4" aria-hidden />
+            {openSessions.length} session{openSessions.length === 1 ? " is" : "s are"} open right
+            now
+          </div>
+          <ul className="mt-3 space-y-2">
+            {openSessions.map((session) => (
+              <li
+                key={session.sessionId}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/60 bg-card p-3"
+              >
+                <div className="min-w-0">
+                  <div className="font-mono text-sm font-semibold">{session.courseCode}</div>
+                  <div className="truncate text-xs text-muted-foreground">
+                    {session.topic ?? session.courseTitle}
+                  </div>
                 </div>
-              </div>
-            </Link>
-          ))}
+                <Button size="sm" asChild>
+                  <Link to="/student/attend">Sign in</Link>
+                </Button>
+              </li>
+            ))}
+          </ul>
         </div>
-      ) : null}
+      )}
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        <StatCard label="Courses" value={courses.length} icon={BookOpen} />
-        <StatCard label="Average attendance" value={`${avg}%`} icon={CheckCircle2} hint="Across all courses" />
-        <StatCard label={`At risk (< ${threshold}%)`} value={atRisk} icon={AlertTriangle} hint="Below required threshold" />
-      </div>
-
-      <h2 className="mt-10 font-display text-lg font-semibold">Course breakdown</h2>
-      <RouteTransition stagger className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {courses.map((c) => (
-          <Link
-            key={c.id}
-            to="/student/courses/$courseId"
-            params={{ courseId: c.id }}
-            className="group rounded-2xl border border-border/70 bg-card p-5 shadow-elegant transition duration-300 hover:-translate-y-0.5 hover:shadow-lift"
-          >
-            <div className="flex items-start gap-4">
-              <CourseGlyph icon={c.icon} color={c.color} seed={c.code} size="lg" />
-              <div className="min-w-0 flex-1">
-                <div className="font-mono text-xs text-muted-foreground">{c.code}</div>
-                <div className="truncate font-display font-semibold">{c.title}</div>
-                <div className="mt-1 text-xs text-muted-foreground">{c.lecturerName}</div>
-              </div>
-              <div className={`font-display text-2xl font-semibold ${c.percentage < threshold ? "text-destructive" : "text-primary"}`}>
-                {c.percentage}%
-              </div>
-            </div>
-            <div className="mt-4">
-              <Progress value={c.percentage} className="h-2" />
-              <div className="mt-2 flex justify-between text-xs text-muted-foreground">
-                <span>{c.attendedSessions} of {c.totalSessions} sessions</span>
-                <span>{c.units} units</span>
-              </div>
-            </div>
-          </Link>
-        ))}
-        {courses.length === 0 && (
+      <QueryBoundary
+        isLoading={coursesQuery.isPending}
+        error={coursesQuery.error}
+        data={courses}
+        onRetry={() => coursesQuery.refetch()}
+        loadingLabel="Loading your courses"
+        isEmpty={(rows) => rows.length === 0}
+        empty={
           <EmptyState
-            className="col-span-full"
             icon={<BookOpen className="h-7 w-7" />}
-            title="No courses yet"
-            description="You are not enrolled in any courses."
+            title="You are not enrolled in any course"
+            description="Contact your department if you believe this is a mistake — administrators manage enrolment."
           />
-        )}
-      </RouteTransition>
-    </>
-  );
-}
+        }
+      >
+        {(rows) => (
+          <>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <StatCard label="Courses" value={rows.length} icon={BookOpen} />
+              <StatCard label="Overall attendance" value={`${overall}%`} />
+              <StatCard label="Below threshold" value={atRisk.length} icon={AlertTriangle} />
+            </div>
 
-function Countdown({ expiresAt }: { expiresAt: number }) {
-  const { data: now } = useQuery({ queryKey: ["now", expiresAt], queryFn: () => Date.now(), refetchInterval: 1000 });
-  const secs = Math.max(0, Math.floor((expiresAt - (now ?? Date.now())) / 1000));
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  return <span>{m}:{s.toString().padStart(2, "0")}</span>;
+            {atRisk.length > 0 && (
+              <div
+                role="status"
+                className="mt-6 flex items-start gap-3 rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm"
+              >
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" aria-hidden />
+                <p>
+                  Your attendance is below the {threshold}% requirement in{" "}
+                  <strong>{atRisk.map((course) => course.code).join(", ")}</strong>. Speak to your
+                  lecturer as soon as possible.
+                </p>
+              </div>
+            )}
+
+            <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {rows.map((course) => {
+                const low = course.percentage < threshold;
+                return (
+                  <Link
+                    key={course.id}
+                    to="/student/courses/$courseId"
+                    params={{ courseId: course.id }}
+                    className="rounded-2xl border border-border/70 bg-card p-5 shadow-elegant transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lift"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono text-sm font-semibold text-primary">
+                        {course.code}
+                      </span>
+                      <Badge variant={low ? "destructive" : "secondary"}>
+                        {course.percentage}%
+                      </Badge>
+                    </div>
+                    <h2 className="mt-2 font-display text-base font-semibold">{course.title}</h2>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {course.attendedSessions} of {course.totalSessions} sessions attended
+                    </p>
+                    <Progress
+                      className="mt-4"
+                      value={course.percentage}
+                      aria-label={`${course.percentage}% attendance in ${course.code}`}
+                    />
+                  </Link>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </QueryBoundary>
+    </RouteTransition>
+  );
 }

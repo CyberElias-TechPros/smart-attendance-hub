@@ -1,115 +1,242 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { useSuspenseQuery, useQueryClient, queryOptions } from "@tanstack/react-query";
-import { useServerFn } from "@tanstack/react-start";
-import { listDepartments, createDepartment, updateDepartment, deleteDepartment } from "@/lib/api.functions";
-import { PageHeader } from "@/components/AppShell";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Trash2, Building2, Pencil } from "lucide-react";
+import { Building2, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import { TrackGlyph } from "@/lib/courseIcons";
-import { ICON_NAMES } from "@/lib/courseIcons";
-import { RouteTransition } from "@/components/RouteTransition";
+
+import { PageHeader } from "@/components/AppShell";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EmptyState } from "@/components/EmptyState";
+import { QueryBoundary } from "@/components/QueryBoundary";
+import { RouteTransition } from "@/components/RouteTransition";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import type { Department } from "../../shared/schemas";
+import { ApiClientError, api, errorMessage } from "@/lib/api";
+import { Field } from "./admin.students";
 
-const deptsQO = queryOptions({ queryKey: ["departments"], queryFn: () => listDepartments() });
+export const Route = createFileRoute("/admin/departments")({ component: DepartmentsPage });
 
-export const Route = createFileRoute("/admin/departments")({
-  loader: ({ context }) => context.queryClient.ensureQueryData(deptsQO),
-  component: DepartmentsPage,
-});
+interface FormState {
+  id?: string;
+  name: string;
+  code: string;
+}
 
 function DepartmentsPage() {
-  const { data: depts } = useSuspenseQuery(deptsQO);
-  const qc = useQueryClient();
-  const createFn = useServerFn(createDepartment);
-  const delFn = useServerFn(deleteDepartment);
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: "", code: "", icon: "", color: "" });
-  const resetForm = () => setForm({ name: "", code: "", icon: "", color: "" });
+  const queryClient = useQueryClient();
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [form, setForm] = useState<FormState>({ name: "", code: "" });
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [deleteTarget, setDeleteTarget] = useState<Department | null>(null);
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      if (editing) {
-        await updateDepartment({ data: { id: editing, ...form } });
-        toast.success("Department updated");
-      } else {
-        await createFn({ data: form });
-        toast.success("Department added");
-      }
-      setOpen(false); setEditing(null); resetForm();
-      qc.invalidateQueries({ queryKey: ["departments"] });
-    } catch (err) { toast.error(err instanceof Error ? err.message : "Failed"); }
+  const query = useQuery({ queryKey: ["departments"], queryFn: () => api.departments() });
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["departments"] });
+    queryClient.invalidateQueries({ queryKey: ["admin", "overview"] });
   };
 
-  const startEdit = (d: { id: string; name: string; code: string; icon?: string; color?: string }) => {
-    setEditing(d.id);
-    setForm({ name: d.name, code: d.code, icon: d.icon ?? "", color: d.color ?? "" });
-    setOpen(true);
+  const saveMutation = useMutation({
+    mutationFn: async (values: FormState): Promise<void> => {
+      const payload = { name: values.name, code: values.code };
+      if (values.id) await api.updateDepartment(values.id, payload);
+      else await api.createDepartment(payload);
+    },
+    onSuccess: (_data, values) => {
+      toast.success(values.id ? "Department updated" : "Department created");
+      setDialogOpen(false);
+      setFieldErrors({});
+      invalidate();
+    },
+    onError: (error) => {
+      if (error instanceof ApiClientError && error.fields) setFieldErrors(error.fields);
+      toast.error(errorMessage(error));
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => api.deleteDepartment(id),
+    onSuccess: () => {
+      toast.success("Department deleted");
+      invalidate();
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  const openCreate = () => {
+    setForm({ name: "", code: "" });
+    setFieldErrors({});
+    setDialogOpen(true);
   };
 
-  const remove = async (id: string) => {
-    await delFn({ data: { id } });
-    qc.invalidateQueries({ queryKey: ["departments"] });
-    toast.success("Removed");
+  const openEdit = (department: Department) => {
+    setForm({ id: department.id, name: department.name, code: department.code });
+    setFieldErrors({});
+    setDialogOpen(true);
   };
 
   return (
-    <>
+    <RouteTransition>
       <PageHeader
         title="Departments"
-        subtitle={`${depts.length} departments`}
+        subtitle="Organise courses and people into faculties."
         actions={
-          <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setEditing(null); resetForm(); } }}>
-            <DialogTrigger asChild><Button><Plus className="mr-2 h-4 w-4" /> {editing ? "Edit" : "Add department"}</Button></DialogTrigger>
-            <DialogContent>
-              <form onSubmit={submit}>
-                <DialogHeader><DialogTitle>{editing ? "Edit department" : "New department"}</DialogTitle></DialogHeader>
-                <div className="mt-4 grid gap-3">
-                  <div className="space-y-1.5"><Label>Name</Label><Input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
-                  <div className="space-y-1.5"><Label>Code</Label><Input required value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase() })} /></div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1.5"><Label>Icon</Label>
-                      <Select value={form.icon} onValueChange={(v) => setForm({ ...form, icon: v })}>
-                        <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
-                        <SelectContent>{ICON_NAMES.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}</SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-1.5"><Label>Color</Label><Input value={form.color} onChange={(e) => setForm({ ...form, color: e.target.value })} placeholder="oklch(...) or hex" /></div>
-                  </div>
-                </div>
-                <DialogFooter className="mt-6"><Button type="submit">{editing ? "Save" : "Create"}</Button></DialogFooter>
-              </form>
-            </DialogContent>
-          </Dialog>
+          <Button onClick={openCreate}>
+            <Plus className="mr-2 h-4 w-4" /> New department
+          </Button>
         }
       />
-      <RouteTransition stagger className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {depts.length === 0 && (
-          <EmptyState className="col-span-full" icon={<Building2 className="h-7 w-7" />} title="No departments" description="Add a department to organize courses." />
-        )}
-        {depts.map((d) => (
-          <div key={d.id} className="group flex items-center justify-between rounded-2xl border border-border/70 bg-card p-5 shadow-elegant transition hover:-translate-y-0.5 hover:shadow-lift">
-            <div className="flex items-center gap-3">
-              <TrackGlyph icon={d.icon} color={d.color} seed={d.code} size="sm" track />
-              <div>
-                <div className="font-display font-semibold">{d.name}</div>
-                <div className="font-mono text-xs text-muted-foreground">{d.code}</div>
+
+      <QueryBoundary
+        isLoading={query.isPending}
+        error={query.error}
+        data={query.data}
+        onRetry={() => query.refetch()}
+        loadingLabel="Loading departments"
+        isEmpty={(data) => data.items.length === 0}
+        empty={
+          <EmptyState
+            icon={<Building2 className="h-7 w-7" />}
+            title="No departments yet"
+            description="Departments group your courses, lecturers and students. Create the first one to get started."
+            action={
+              <Button onClick={openCreate}>
+                <Plus className="mr-2 h-4 w-4" /> New department
+              </Button>
+            }
+          />
+        }
+      >
+        {(data) => (
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {data.items.map((department) => (
+              <div
+                key={department.id}
+                className="group rounded-2xl border border-border/70 bg-card p-5 shadow-elegant transition hover:shadow-lift"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate font-display text-lg font-semibold">
+                      {department.name}
+                    </div>
+                    <div className="mt-0.5 font-mono text-xs uppercase tracking-wider text-muted-foreground">
+                      {department.code}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => openEdit(department)}
+                      aria-label={`Edit ${department.name}`}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => setDeleteTarget(department)}
+                      aria-label={`Delete ${department.name}`}
+                      className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+                <dl className="mt-4 flex gap-6 border-t border-border/60 pt-4 text-sm">
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Courses</dt>
+                    <dd className="font-display text-xl font-semibold">{department.courseCount}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Students</dt>
+                    <dd className="font-display text-xl font-semibold">
+                      {department.studentCount}
+                    </dd>
+                  </div>
+                </dl>
               </div>
-            </div>
-            <div className="flex gap-1">
-              <Button variant="ghost" size="icon" onClick={() => startEdit(d)}><Pencil className="h-4 w-4" /></Button>
-              <Button variant="ghost" size="icon" onClick={() => remove(d.id)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
-            </div>
+            ))}
           </div>
-        ))}
-      </RouteTransition>
-    </>
+        )}
+      </QueryBoundary>
+
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{form.id ? "Edit department" : "New department"}</DialogTitle>
+            <DialogDescription>
+              Departments group courses, lecturers and students together.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            id="department-form"
+            noValidate
+            onSubmit={(event) => {
+              event.preventDefault();
+              setFieldErrors({});
+              saveMutation.mutate(form);
+            }}
+            className="space-y-4"
+          >
+            <Field label="Name" htmlFor="dept-name" error={fieldErrors.name}>
+              <Input
+                id="dept-name"
+                required
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder="Computer Science"
+              />
+            </Field>
+            <Field
+              label="Code"
+              htmlFor="dept-code"
+              error={fieldErrors.code}
+              hint="A short unique abbreviation, e.g. CSC."
+            >
+              <Input
+                id="dept-code"
+                required
+                value={form.code}
+                onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase() })}
+                placeholder="CSC"
+                maxLength={10}
+                className="font-mono uppercase"
+              />
+            </Field>
+          </form>
+          <DialogFooter>
+            <Button variant="outline" type="button" onClick={() => setDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" form="department-form" disabled={saveMutation.isPending}>
+              {saveMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {form.id ? "Save changes" : "Create department"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        title={`Delete ${deleteTarget?.name}?`}
+        description="This can only be done once no courses or people belong to the department."
+        confirmLabel="Delete department"
+        onConfirm={async () => {
+          if (deleteTarget) await deleteMutation.mutateAsync(deleteTarget.id);
+          setDeleteTarget(null);
+        }}
+      />
+    </RouteTransition>
   );
 }

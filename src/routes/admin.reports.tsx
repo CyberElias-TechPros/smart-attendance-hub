@@ -1,120 +1,262 @@
+import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { useSuspenseQuery, queryOptions, useQuery } from "@tanstack/react-query";
-import { listCourses, courseReport } from "@/lib/api.functions";
-import { PageHeader } from "@/components/AppShell";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { AlertTriangle, Download, FileBarChart, FileSpreadsheet } from "lucide-react";
+import { useMemo, useState } from "react";
+import { toast } from "sonner";
+
+import { PageHeader, StatCard } from "@/components/AppShell";
+import { Column, DataTable, SearchInput, useDebounced } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { QueryBoundary } from "@/components/QueryBoundary";
+import { RouteTransition } from "@/components/RouteTransition";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Progress } from "@/components/ui/progress";
-import { FileDown, FileSpreadsheet, Loader2 } from "lucide-react";
-import { useState } from "react";
-import { exportPDF, exportExcel } from "@/lib/exporters";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import type { FacultyReport } from "../../shared/schemas";
+import { api, errorMessage } from "@/lib/api";
 import { useAtRiskThreshold } from "@/lib/useSiteSettings";
 
-const coursesQO = queryOptions({ queryKey: ["courses"], queryFn: () => listCourses() });
+export const Route = createFileRoute("/admin/reports")({ component: ReportsPage });
 
-export const Route = createFileRoute("/admin/reports")({
-  loader: ({ context }) => context.queryClient.ensureQueryData(coursesQO),
-  component: ReportsPage,
-});
+type StudentRow = FacultyReport["students"][number];
+type CourseRow = FacultyReport["courses"][number];
 
 function ReportsPage() {
-  const { data: courses } = useSuspenseQuery(coursesQO);
   const threshold = useAtRiskThreshold();
-  const [courseId, setCourseId] = useState<string>(courses[0]?.id ?? "");
+  const [searchInput, setSearchInput] = useState("");
+  const search = useDebounced(searchInput);
+  const [riskFilter, setRiskFilter] = useState<"all" | "at-risk">("all");
+  const [exporting, setExporting] = useState(false);
 
-  const reportQ = useQuery({
-    queryKey: ["report", courseId],
-    queryFn: () => courseReport({ data: { courseId } }),
-    enabled: Boolean(courseId),
+  const query = useQuery({
+    queryKey: ["admin", "reports", "faculty"],
+    queryFn: () => api.facultyReport(),
   });
 
+  const students = useMemo(() => {
+    let rows = query.data?.students ?? [];
+    if (search) {
+      const needle = search.toLowerCase();
+      rows = rows.filter(
+        (student) =>
+          student.name.toLowerCase().includes(needle) ||
+          student.matricNo.toLowerCase().includes(needle),
+      );
+    }
+    if (riskFilter === "at-risk") rows = rows.filter((student) => student.percentage < threshold);
+    return rows;
+  }, [query.data, search, riskFilter, threshold]);
+
+  const atRiskCount = (query.data?.students ?? []).filter(
+    (student) => student.percentage < threshold,
+  ).length;
+
+  const overallAverage = useMemo(() => {
+    const rows = query.data?.students ?? [];
+    if (rows.length === 0) return 0;
+    return Math.round(rows.reduce((sum, s) => sum + s.percentage, 0) / rows.length);
+  }, [query.data]);
+
+  // The export libraries are heavy (jsPDF + xlsx ≈ 900 kB); load them only when
+  // the user actually exports rather than in the initial bundle.
+  const runExport = async (format: "pdf" | "excel") => {
+    if (!query.data) return;
+    setExporting(true);
+    try {
+      const { exportFacultyPDF, exportFacultyExcel } = await import("@/lib/exporters");
+      if (format === "pdf") await exportFacultyPDF(query.data, threshold);
+      else await exportFacultyExcel(query.data);
+      toast.success(`Report exported as ${format === "pdf" ? "PDF" : "Excel"}`);
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const studentColumns: Column<StudentRow>[] = [
+    {
+      key: "name",
+      header: "Student",
+      render: (row) => <span className="font-medium">{row.name}</span>,
+    },
+    {
+      key: "matric",
+      header: "Matric no.",
+      render: (row) => <span className="font-mono text-xs">{row.matricNo}</span>,
+    },
+    { key: "courses", header: "Courses", hideOnMobile: true, render: (row) => row.courses },
+    {
+      key: "attended",
+      header: "Attended",
+      hideOnMobile: true,
+      render: (row) => `${row.attended} / ${row.total}`,
+    },
+    {
+      key: "percentage",
+      header: "Attendance",
+      render: (row) => (
+        <div className="flex items-center gap-2">
+          <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+            <div
+              className={row.percentage < threshold ? "h-full bg-destructive" : "h-full bg-primary"}
+              style={{ width: `${Math.min(100, row.percentage)}%` }}
+            />
+          </div>
+          <span
+            className={
+              row.percentage < threshold
+                ? "font-semibold text-destructive"
+                : "font-semibold text-foreground"
+            }
+          >
+            {row.percentage}%
+          </span>
+        </div>
+      ),
+    },
+  ];
+
+  const courseColumns: Column<CourseRow>[] = [
+    {
+      key: "code",
+      header: "Course",
+      render: (row) => (
+        <div>
+          <span className="font-mono text-sm font-semibold text-primary">{row.code}</span>
+          <span className="block truncate text-xs text-muted-foreground">{row.title}</span>
+        </div>
+      ),
+    },
+    { key: "enrolled", header: "Enrolled", render: (row) => row.enrolled },
+    { key: "sessions", header: "Sessions", render: (row) => row.sessions },
+    {
+      key: "avg",
+      header: "Average",
+      render: (row) => (
+        <Badge variant={row.avg < threshold ? "destructive" : "secondary"}>{row.avg}%</Badge>
+      ),
+    },
+  ];
+
   return (
-    <>
+    <RouteTransition>
       <PageHeader
         title="Reports"
-        subtitle="Course-level attendance breakdown with PDF & Excel export."
+        subtitle="Faculty-wide attendance analysis and exports."
         actions={
           <div className="flex gap-2">
             <Button
               variant="outline"
-              disabled={!reportQ.data}
-              onClick={() => reportQ.data && exportPDF(reportQ.data)}
+              onClick={() => runExport("pdf")}
+              disabled={exporting || !query.data}
             >
-              <FileDown className="mr-2 h-4 w-4" /> PDF
+              <Download className="mr-2 h-4 w-4" /> PDF
             </Button>
             <Button
-              disabled={!reportQ.data}
-              onClick={() => reportQ.data && exportExcel(reportQ.data)}
+              variant="outline"
+              onClick={() => runExport("excel")}
+              disabled={exporting || !query.data}
             >
               <FileSpreadsheet className="mr-2 h-4 w-4" /> Excel
             </Button>
           </div>
         }
       />
-      <div className="mb-4 max-w-md">
-        <Select value={courseId} onValueChange={setCourseId}>
-          <SelectTrigger><SelectValue placeholder="Choose a course" /></SelectTrigger>
-          <SelectContent>
-            {courses.map((c) => <SelectItem key={c.id} value={c.id}>{c.code} — {c.title}</SelectItem>)}
-          </SelectContent>
-        </Select>
-      </div>
 
-      {reportQ.isLoading && (
-        <div className="grid h-40 place-items-center text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" /></div>
-      )}
+      <QueryBoundary
+        isLoading={query.isPending}
+        error={query.error}
+        data={query.data}
+        onRetry={() => query.refetch()}
+        loadingLabel="Building reports"
+        isEmpty={(data) => data.courses.length === 0 && data.students.length === 0}
+        empty={
+          <EmptyState
+            icon={<FileBarChart className="h-7 w-7" />}
+            title="Nothing to report yet"
+            description="Once courses have enrolled students and attendance sessions, analysis appears here."
+          />
+        }
+      >
+        {(data) => (
+          <>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <StatCard label="Tracked students" value={data.students.length} />
+              <StatCard label="Average attendance" value={`${overallAverage}%`} />
+              <StatCard
+                label={`At risk (below ${threshold}%)`}
+                value={atRiskCount}
+                icon={AlertTriangle}
+              />
+            </div>
 
-      {reportQ.data && (
-        <div className="space-y-6">
-          <div className="grid gap-4 sm:grid-cols-3">
-            <SummaryCard label="Course" value={`${reportQ.data.course.code}`} sub={reportQ.data.course.title} />
-            <SummaryCard label="Sessions held" value={String(reportQ.data.totalSessions)} sub={`${reportQ.data.students.length} students enrolled`} />
-            <SummaryCard
-              label="Average attendance"
-              value={`${Math.round(reportQ.data.students.reduce((a, s) => a + s.percentage, 0) / Math.max(1, reportQ.data.students.length))}%`}
-              sub="Across all enrolled"
-            />
-          </div>
-          <div className="rounded-2xl border border-border/70 bg-card shadow-elegant">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Student</TableHead>
-                  <TableHead>Matric</TableHead>
-                  <TableHead className="text-right">Attended</TableHead>
-                  <TableHead className="w-64">Attendance %</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {reportQ.data.students.map((s) => (
-                  <TableRow key={s.id}>
-                    <TableCell className="font-medium">{s.name}</TableCell>
-                    <TableCell className="font-mono text-xs">{s.matricNo}</TableCell>
-                    <TableCell className="text-right">{s.attended} / {reportQ.data!.totalSessions}</TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-3">
-                        <Progress value={s.percentage} className="h-2" />
-                        <span className={s.percentage < threshold ? "text-destructive font-mono text-sm" : "font-mono text-sm"}>{s.percentage}%</span>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
+            <Tabs defaultValue="students" className="mt-8">
+              <TabsList>
+                <TabsTrigger value="students">By student</TabsTrigger>
+                <TabsTrigger value="courses">By course</TabsTrigger>
+              </TabsList>
 
-function SummaryCard({ label, value, sub }: { label: string; value: string; sub: string }) {
-  return (
-    <div className="rounded-2xl border border-border/70 bg-card p-5 shadow-elegant">
-      <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">{label}</div>
-      <div className="mt-2 font-display text-2xl font-semibold">{value}</div>
-      <div className="text-xs text-muted-foreground">{sub}</div>
-    </div>
+              <TabsContent value="students" className="mt-4">
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <SearchInput
+                    value={searchInput}
+                    onChange={setSearchInput}
+                    placeholder="Search students"
+                    label="Search students in report"
+                  />
+                  <Select
+                    value={riskFilter}
+                    onValueChange={(value) => setRiskFilter(value as "all" | "at-risk")}
+                  >
+                    <SelectTrigger className="w-full sm:w-48" aria-label="Filter by risk">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All students</SelectItem>
+                      <SelectItem value="at-risk">At risk only</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <DataTable
+                  columns={studentColumns}
+                  rows={students}
+                  getRowKey={(row) => row.id}
+                  emptyState={
+                    <EmptyState
+                      icon={<FileBarChart className="h-7 w-7" />}
+                      title="No students match"
+                      description="Adjust your search or filter to see results."
+                    />
+                  }
+                />
+              </TabsContent>
+
+              <TabsContent value="courses" className="mt-4">
+                <DataTable
+                  columns={courseColumns}
+                  rows={data.courses}
+                  getRowKey={(row) => row.id}
+                  emptyState={
+                    <EmptyState
+                      icon={<FileBarChart className="h-7 w-7" />}
+                      title="No courses yet"
+                      description="Create courses to see per-course attendance."
+                    />
+                  }
+                />
+              </TabsContent>
+            </Tabs>
+          </>
+        )}
+      </QueryBoundary>
+    </RouteTransition>
   );
 }

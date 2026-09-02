@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /$
+Allow: /login
+# Authenticated areas hold personal data and must never be indexed.
+Disallow: /admin
+Disallow: /lecturer
+Disallow: /student
+Disallow: /settings
+Disallow: /api
+
+Sitemap: /sitemap.xml

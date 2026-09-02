@@ -1,6 +1,6 @@
-import { Link, useRouterState, useRouter, useNavigate } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
-import { logout } from "@/lib/api.functions";
+import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
+import { useAuth } from "@/lib/auth";
+import { usePublicSettings } from "@/lib/useSiteSettings";
 import { GraduationCap, LogOut, Menu, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
@@ -28,15 +28,22 @@ export function AppShell({
 }) {
   const [open, setOpen] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const router = useRouter();
   const navigate = useNavigate();
-  const logoutFn = useServerFn(logout);
+  const { signOut } = useAuth();
+  const { data: settings } = usePublicSettings();
+  const institution = settings?.institutionName ?? "SLAMS";
+  const [signingOut, setSigningOut] = useState(false);
 
   const handleLogout = async () => {
-    await logoutFn();
-    await router.invalidate();
-    toast.success("Signed out");
-    navigate({ to: "/login", replace: true });
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      await signOut();
+      toast.success("Signed out");
+      await navigate({ to: "/login", replace: true });
+    } finally {
+      setSigningOut(false);
+    }
   };
 
   return (
@@ -47,18 +54,32 @@ export function AppShell({
             <div className="grid h-7 w-7 place-items-center rounded-md bg-primary text-primary-foreground">
               <GraduationCap className="h-4 w-4" />
             </div>
-            <span className="font-display text-base font-semibold">SLAMS</span>
+            <span className="font-display text-base font-semibold">{institution}</span>
           </Link>
           <div className="flex items-center gap-2">
             <ThemeToggle />
-            <button onClick={() => setOpen((v) => !v)} className="rounded-md p-2 hover:bg-accent/40" aria-label="menu">
+            <button
+              onClick={() => setOpen((v) => !v)}
+              className="rounded-md p-2 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label={open ? "Close navigation menu" : "Open navigation menu"}
+              aria-expanded={open}
+            >
               {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
             </button>
           </div>
         </div>
 
       <div className="flex">
+        {/* Dim + close the drawer when the mobile overlay is tapped. */}
+        {open && (
+          <div
+            className="fixed inset-0 z-20 bg-foreground/40 backdrop-blur-sm lg:hidden"
+            onClick={() => setOpen(false)}
+            aria-hidden
+          />
+        )}
         <aside
+          aria-label="Main navigation"
           className={cn(
             "fixed inset-y-0 left-0 z-30 flex w-64 flex-col border-r border-border/60 bg-sidebar transition-transform lg:sticky lg:top-0 lg:h-screen lg:translate-x-0",
             open ? "translate-x-0" : "-translate-x-full",
@@ -70,7 +91,7 @@ export function AppShell({
               <GraduationCap className="h-5 w-5" />
             </div>
             <div>
-              <div className="font-display text-base font-semibold leading-none">SLAMS</div>
+              <div className="font-display text-base font-semibold leading-none">{institution}</div>
               <div className="mt-1 text-[10px] uppercase tracking-[0.2em] text-muted-foreground">{role}</div>
             </div>
           </div>
@@ -82,6 +103,7 @@ export function AppShell({
                   key={n.to}
                   to={n.to}
                   onClick={() => setOpen(false)}
+                  aria-current={active ? "page" : undefined}
                   className={cn(
                     "group flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition",
                     active
@@ -89,7 +111,7 @@ export function AppShell({
                       : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground",
                   )}
                 >
-                  <n.icon className="h-4 w-4" />
+                  <n.icon className="h-4 w-4 shrink-0" aria-hidden />
                   {n.label}
                 </Link>
               );
@@ -105,8 +127,10 @@ export function AppShell({
               <ThemeToggle />
               <button
                 onClick={handleLogout}
-                className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                disabled={signingOut}
+                className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                 title="Sign out"
+                aria-label="Sign out"
               >
                 <LogOut className="h-4 w-4" />
               </button>
@@ -114,7 +138,7 @@ export function AppShell({
           </div>
         </aside>
 
-        <main className="min-w-0 flex-1">
+        <main id="main-content" className="min-w-0 flex-1">
           <div className="mx-auto max-w-7xl px-4 py-6 sm:px-8 sm:py-8">{children}</div>
         </main>
       </div>
@@ -127,8 +151,8 @@ export function PageHeader({
   subtitle,
   actions,
 }: {
-  title: string;
-  subtitle?: string;
+  title: ReactNode;
+  subtitle?: ReactNode;
   actions?: ReactNode;
 }) {
   return (

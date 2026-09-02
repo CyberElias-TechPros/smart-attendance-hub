@@ -51,3 +51,25 @@ export function TableSkeleton({ rows = 5, cols = 4 }: { rows?: number; cols?: nu
     </div>
   );
 }
+
+export function FullPageLoader({ label = "Loading" }: { label?: string }) {
+  return (
+    <div
+      className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="h-10 w-10 animate-spin rounded-full border-2 border-primary/25 border-t-primary" />
+      <p className="text-sm text-muted-foreground">{label}…</p>
+    </div>
+  );
+}
+
+export function InlineLoader({ label = "Loading" }: { label?: string }) {
+  return (
+    <div className="flex items-center justify-center gap-3 py-12" role="status" aria-live="polite">
+      <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary/25 border-t-primary" />
+      <span className="text-sm text-muted-foreground">{label}…</span>
+    </div>
+  );
+}

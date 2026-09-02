@@ -1,7 +1,17 @@
-import { createFileRoute, redirect, Outlet } from "@tanstack/react-router";
-import { me } from "@/lib/api.functions";
+import { Outlet, createFileRoute, redirect } from "@tanstack/react-router";
+import {
+  Building2,
+  BookOpen,
+  FileBarChart,
+  GraduationCap,
+  LayoutDashboard,
+  ScrollText,
+  Settings,
+  Settings2,
+  Users,
+} from "lucide-react";
+
 import { AppShell, type NavItem } from "@/components/AppShell";
-import { LayoutDashboard, GraduationCap, Users, Building2, BookOpen, FileBarChart, Settings, Settings2 } from "lucide-react";
 
 const nav: NavItem[] = [
   { to: "/admin", label: "Overview", icon: LayoutDashboard },
@@ -10,26 +20,30 @@ const nav: NavItem[] = [
   { to: "/admin/departments", label: "Departments", icon: Building2 },
   { to: "/admin/courses", label: "Courses", icon: BookOpen },
   { to: "/admin/reports", label: "Reports", icon: FileBarChart },
+  { to: "/admin/audit", label: "Audit log", icon: ScrollText },
   { to: "/admin/settings", label: "Branding", icon: Settings2 },
-  { to: "/settings", label: "Settings", icon: Settings },
+  { to: "/settings", label: "My account", icon: Settings },
 ];
 
 export const Route = createFileRoute("/admin")({
-  beforeLoad: async () => {
-    const user = await me();
-    if (!user) throw redirect({ to: "/login" });
-    if (user.role !== "admin") throw redirect({ to: user.role === "lecturer" ? "/lecturer" : "/student" });
-    return { user };
+  // Guard is presentational: it decides what to render, while the Worker
+  // independently rejects any request from a non-admin.
+  beforeLoad: ({ context, location }) => {
+    if (!context.auth.isAuthenticated) {
+      throw redirect({ to: "/login", search: { redirect: location.href } });
+    }
+    if (context.auth.user!.role !== "admin") {
+      throw redirect({ to: context.auth.user!.role === "lecturer" ? "/lecturer" : "/student" });
+    }
   },
   component: AdminLayout,
 });
 
 function AdminLayout() {
-  const { user } = Route.useRouteContext();
+  const { auth } = Route.useRouteContext();
   return (
-    <AppShell role="Administrator" userName={user.name} nav={nav}>
+    <AppShell role="Administrator" userName={auth.user!.name} nav={nav}>
       <Outlet />
     </AppShell>
   );
 }
-

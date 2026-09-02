@@ -1,32 +1,119 @@
-name = "slams"
-main = "./.output/server/index.mjs"
+# SLAMS API — Cloudflare Worker.
+#
+# The frontend is deployed separately to Vercel; this Worker is the entire
+# backend. It uses no Node built-ins (Web Crypto only), so `nodejs_compat` is
+# deliberately NOT enabled — that keeps the isolate small and cold starts fast.
+
+name = "slams-api"
+main = "worker/index.ts"
 compatibility_date = "2025-01-01"
-compatibility_flags = ["nodejs_compat"]
 account_id = "e543b6a0521fc8fd76447ceba097b665"
+workers_dev = true
 
-# Static assets built by Vite, served by Nitro's cloudflare_module worker.
-assets = { directory = "./.output/public", binding = "ASSETS" }
+[observability]
+enabled = true
+head_sampling_rate = 1
 
-# Cloudflare D1 database. Create it once with:
-#   wrangler d1 create slams
-# then paste the returned database_id below.
+[observability.logs]
+enabled = true
+invocation_logs = true
+
+# ── Default (development / `wrangler dev`) ──────────────────────────────────
+
+[vars]
+ENVIRONMENT = "development"
+# Local dev origins only. Production/preview values are set per-environment.
+ALLOWED_ORIGINS = "http://localhost:3000,http://localhost:5173"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "slams"
 database_id = "7ba50733-1f70-48ea-8d30-8c450e963c31"
 migrations_dir = "migrations"
 
-[observability]
-enabled = false
-head_sampling_rate = 1
+# Cached public branding. Eventually consistent, which is fine for read-mostly
+# configuration that is explicitly invalidated on write.
+[[kv_namespaces]]
+binding = "CACHE"
+id = "slams_cache_local"
 
-[observability.logs]
-enabled = true
-head_sampling_rate = 1
-persist = true
-invocation_logs = true
+# Fixed-window rate-limit counters.
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "slams_ratelimit_local"
 
-[observability.traces]
-enabled = true
-persist = true
-head_sampling_rate = 1
+# Generated report exports. Large binaries never belong in D1.
+[[r2_buckets]]
+binding = "EXPORTS"
+bucket_name = "slams-exports"
+
+# Closes sessions the lecturer forgot to end and prunes old audit rows.
+[triggers]
+crons = ["*/15 * * * *"]
+
+# ── Staging ─────────────────────────────────────────────────────────────────
+
+[env.staging]
+name = "slams-api-staging"
+workers_dev = true
+
+[env.staging.vars]
+ENVIRONMENT = "staging"
+# Vercel preview deployments get generated subdomains, hence the wildcard.
+ALLOWED_ORIGINS = "*.vercel.app"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "slams-staging"
+database_id = "REPLACE_WITH_STAGING_D1_ID"
+migrations_dir = "migrations"
+
+[[env.staging.kv_namespaces]]
+binding = "CACHE"
+id = "REPLACE_WITH_STAGING_CACHE_KV_ID"
+
+[[env.staging.kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "REPLACE_WITH_STAGING_RATELIMIT_KV_ID"
+
+[[env.staging.r2_buckets]]
+binding = "EXPORTS"
+bucket_name = "slams-exports-staging"
+
+[env.staging.triggers]
+crons = ["*/15 * * * *"]
+
+# ── Production ──────────────────────────────────────────────────────────────
+
+[env.production]
+name = "slams-api"
+workers_dev = false
+
+[env.production.vars]
+ENVIRONMENT = "production"
+# Exact production origin(s) only — no wildcard, no reflection.
+ALLOWED_ORIGINS = "REPLACE_WITH_https://your-app.vercel.app"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "slams"
+database_id = "7ba50733-1f70-48ea-8d30-8c450e963c31"
+migrations_dir = "migrations"
+
+[[env.production.kv_namespaces]]
+binding = "CACHE"
+id = "REPLACE_WITH_PRODUCTION_CACHE_KV_ID"
+
+[[env.production.kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "REPLACE_WITH_PRODUCTION_RATELIMIT_KV_ID"
+
+[[env.production.r2_buckets]]
+binding = "EXPORTS"
+bucket_name = "slams-exports"
+
+[env.production.triggers]
+crons = ["*/15 * * * *"]
+
+# Secrets (never in this file — set with `wrangler secret put`):
+#   SESSION_SECRET   32+ random bytes, used to sign session JWTs.

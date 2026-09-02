@@ -1,14 +1,15 @@
+import { Inbox } from "lucide-react";
 import { type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 export function EmptyState({
-  icon: Icon,
+  icon: Icon = <Inbox className="h-7 w-7" />,
   title,
   description,
   action,
   className,
 }: {
-  icon: ReactNode;
+  icon?: ReactNode;
   title: string;
   description?: string;
   action?: ReactNode;

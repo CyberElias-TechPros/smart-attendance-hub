@@ -1,161 +1,264 @@
+import { useMutation } from "@tanstack/react-query";
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { useSuspenseQuery, useQueryClient, queryOptions } from "@tanstack/react-query";
-import { useServerFn } from "@tanstack/react-start";
-import { me, listDepartments, changePassword, updateProfile } from "@/lib/api.functions";
-import { PageHeader } from "@/components/AppShell";
-import { Avatar } from "@/components/Avatar";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
+import { Check, KeyRound, Loader2, LogOut, UserCog, X } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import { KeyRound, UserCog, Mail, GraduationCap, Save } from "lucide-react";
-import { RouteTransition } from "@/components/RouteTransition";
 
-const deptsQO = queryOptions({ queryKey: ["departments"], queryFn: () => listDepartments() });
+import { AppShell, PageHeader } from "@/components/AppShell";
+import { RouteTransition } from "@/components/RouteTransition";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { ApiClientError, api, errorMessage } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import { Field } from "./admin.students";
 
 export const Route = createFileRoute("/settings")({
-  beforeLoad: async () => {
-    const user = await me();
-    if (!user) throw redirect({ to: "/login" });
-    return { user };
+  beforeLoad: ({ context, location }) => {
+    if (!context.auth.isAuthenticated) {
+      throw redirect({ to: "/login", search: { redirect: location.href } });
+    }
   },
-  loader: ({ context }) => context.queryClient.ensureQueryData(deptsQO),
   component: SettingsPage,
 });
 
+/**
+ * Mirrors the server-side policy in `shared/schemas.ts` so the user gets
+ * immediate feedback; the server remains the authority.
+ */
+const PASSWORD_RULES = [
+  { id: "length", label: "At least 10 characters", test: (v: string) => v.length >= 10 },
+  { id: "lower", label: "A lowercase letter", test: (v: string) => /[a-z]/.test(v) },
+  { id: "upper", label: "An uppercase letter", test: (v: string) => /[A-Z]/.test(v) },
+  { id: "digit", label: "A number", test: (v: string) => /\d/.test(v) },
+];
+
 function SettingsPage() {
-  const { user } = Route.useRouteContext();
-  const { data: depts } = useSuspenseQuery(deptsQO);
-  const qc = useQueryClient();
-  const changeFn = useServerFn(changePassword);
-  const profileFn = useServerFn(updateProfile);
-  const [cur, setCur] = useState("");
-  const [next, setNext] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [name, setName] = useState(user.name);
-  const [email, setEmail] = useState(user.email);
-
-  const dept = depts.find((d) => d.id === user.departmentId);
-  const roleLabel = user.role.charAt(0).toUpperCase() + user.role.slice(1);
-
-  const savePassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (next.length < 6) return toast.error("New password must be at least 6 characters");
-    if (next !== confirm) return toast.error("New passwords do not match");
-    try {
-      await changeFn({ data: { currentPassword: cur, newPassword: next } });
-      toast.success("Password changed");
-      setCur(""); setNext(""); setConfirm("");
-      qc.invalidateQueries({ queryKey: ["users"] });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed");
-    }
-  };
-
-  const saveProfile = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      await profileFn({ data: { name, email } });
-      toast.success("Profile updated");
-      qc.invalidateQueries({ queryKey: ["users"] });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed");
-    }
-  };
+  const { user, refresh, signOut } = useAuth();
+  const roleLabel =
+    user?.role === "admin" ? "Administrator" : user?.role === "lecturer" ? "Lecturer" : "Student";
 
   return (
-    <RouteTransition>
-      <PageHeader title="Settings" subtitle="Your profile and account security." />
+    <AppShell role={roleLabel} userName={user?.name ?? ""} nav={[]}>
+      <RouteTransition>
+        <PageHeader title="My account" subtitle="Update your profile and password." />
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-1">
-          <div className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
-            <div className="flex flex-col items-center text-center">
-              <Avatar name={user.name} seed={user.id} size="xl" />
-              <div className="mt-4 font-display text-lg font-semibold">{user.name}</div>
-              <div className="text-sm text-muted-foreground">{user.email}</div>
-              <Badge className="mt-2" variant="secondary">{roleLabel}</Badge>
-            </div>
-            <div className="mt-5 space-y-2 border-t border-border/60 pt-4 text-sm">
-              <Row icon={<GraduationCap className="h-4 w-4" />} label="Department" value={dept?.name ?? "—"} />
-              {user.role === "student" && <Row icon={<UserCog className="h-4 w-4" />} label="Matric" value={user.matricNo ?? "—"} />}
-              {user.role === "lecturer" && <Row icon={<UserCog className="h-4 w-4" />} label="Staff ID" value={user.staffId ?? "—"} />}
-              {user.level && <Row icon={<GraduationCap className="h-4 w-4" />} label="Level" value={user.level} />}
-            </div>
-          </div>
-        </div>
+        <div className="max-w-2xl space-y-6">
+          <ProfileSection onSaved={refresh} />
+          <PasswordSection onChanged={signOut} />
 
-        <div className="lg:col-span-2 space-y-6">
-          <form onSubmit={saveProfile} className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
-            <div className="flex items-center gap-2">
-              <div className="grid h-9 w-9 place-items-center rounded-lg bg-primary/10 text-primary"><Mail className="h-4 w-4" /></div>
-              <h2 className="font-display text-lg font-semibold">Update profile</h2>
+          <section className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
+            <h2 className="font-display text-lg font-semibold">Appearance</h2>
+            <div className="mt-4 flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">
+                Switch between light and dark. Your choice is remembered on this device.
+              </p>
+              <ThemeToggle />
             </div>
-            <div className="mt-5 max-w-md space-y-4">
-              <div className="space-y-1.5">
-                <Label>Display name</Label>
-                <Input required value={name} onChange={(e) => setName(e.target.value)} />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Email</Label>
-                <Input required type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-              </div>
-            </div>
-            <div className="mt-6 flex justify-end">
-              <Button type="submit"><Save className="mr-2 h-4 w-4" /> Save profile</Button>
-            </div>
-          </form>
+          </section>
 
-          <form onSubmit={savePassword} className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
-            <div className="flex items-center gap-2">
-              <div className="grid h-9 w-9 place-items-center rounded-lg bg-primary/10 text-primary"><KeyRound className="h-4 w-4" /></div>
-              <h2 className="font-display text-lg font-semibold">Change password</h2>
-            </div>
-            <div className="mt-5 max-w-md space-y-4">
-              <div className="space-y-1.5">
-                <Label>Current password</Label>
-                <Input type="password" required value={cur} onChange={(e) => setCur(e.target.value)} placeholder="••••••••" />
-              </div>
-              <div className="space-y-1.5">
-                <Label>New password</Label>
-                <Input type="password" required value={next} onChange={(e) => setNext(e.target.value)} placeholder="At least 6 characters" />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Confirm new password</Label>
-                <Input type="password" required value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="••••••••" />
-              </div>
-            </div>
-            <div className="mt-6 flex justify-end">
-              <Button type="submit">Update password</Button>
-            </div>
-          </form>
-
-          <Card className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
-            <div className="flex items-center gap-2">
-              <div className="grid h-9 w-9 place-items-center rounded-lg bg-accent/20 text-accent-foreground"><Mail className="h-4 w-4" /></div>
-              <h2 className="font-display text-lg font-semibold">Account</h2>
-            </div>
-            <p className="mt-3 text-sm text-muted-foreground">
-              Signed in as <span className="font-medium text-foreground">{user.email}</span>. Your session is secured with a signed,
-              HTTP-only cookie. Use the password form to keep your account safe.
+          <section className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
+            <h2 className="font-display text-lg font-semibold">Session</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Signing out ends this session everywhere it is stored on this device.
             </p>
-          </Card>
+            <Button variant="outline" className="mt-4" onClick={() => void signOut()}>
+              <LogOut className="mr-2 h-4 w-4" /> Sign out
+            </Button>
+          </section>
         </div>
-      </div>
-    </RouteTransition>
+      </RouteTransition>
+    </AppShell>
   );
 }
 
-function Row({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+function ProfileSection({ onSaved }: { onSaved: () => Promise<void> | void }) {
+  const { user } = useAuth();
+  const [name, setName] = useState(user?.name ?? "");
+  const [email, setEmail] = useState(user?.email ?? "");
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  const mutation = useMutation({
+    mutationFn: () => api.updateProfile({ name: name.trim(), email: email.trim() }),
+    onSuccess: async () => {
+      toast.success("Profile updated");
+      setFieldErrors({});
+      // Refresh the cached `me` payload so the shell and guards see the change.
+      await onSaved();
+    },
+    onError: (error) => {
+      if (error instanceof ApiClientError && error.fields) setFieldErrors(error.fields);
+      toast.error(errorMessage(error));
+    },
+  });
+
+  const emailChanged = email.trim().toLowerCase() !== (user?.email ?? "").toLowerCase();
+
   return (
-    <div className="flex items-center justify-between">
-      <span className="flex items-center gap-2 text-muted-foreground">
-        {icon} {label}
-      </span>
-      <span className="font-medium">{value}</span>
-    </div>
+    <section className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
+      <h2 className="flex items-center gap-2 font-display text-lg font-semibold">
+        <UserCog className="h-5 w-5 text-primary" aria-hidden /> Profile
+      </h2>
+      <form
+        noValidate
+        className="mt-4 space-y-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          setFieldErrors({});
+          mutation.mutate();
+        }}
+      >
+        <Field label="Full name" htmlFor="profile-name" error={fieldErrors.name}>
+          <Input
+            id="profile-name"
+            required
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            autoComplete="name"
+          />
+        </Field>
+        <Field
+          label="Email address"
+          htmlFor="profile-email"
+          error={fieldErrors.email}
+          hint={
+            emailChanged
+              ? "Changing your email changes the address you sign in with."
+              : "This is the address you sign in with."
+          }
+        >
+          <Input
+            id="profile-email"
+            type="email"
+            required
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            autoComplete="email"
+          />
+        </Field>
+        <Button type="submit" disabled={mutation.isPending}>
+          {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Save profile
+        </Button>
+      </form>
+    </section>
+  );
+}
+
+function PasswordSection({ onChanged }: { onChanged: () => Promise<void> | void }) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  const unmet = PASSWORD_RULES.filter((rule) => !rule.test(newPassword));
+
+  const mutation = useMutation({
+    mutationFn: () => api.changePassword({ currentPassword, newPassword }),
+    onSuccess: async () => {
+      // The server bumps `token_version`, invalidating every existing session —
+      // including this one — so send the user back to sign in with the new
+      // password rather than leaving a dead session in the tab.
+      toast.success("Password changed. Please sign in again.");
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      await onChanged();
+    },
+    onError: (error) => {
+      if (error instanceof ApiClientError && error.fields) setFieldErrors(error.fields);
+      toast.error(errorMessage(error));
+    },
+  });
+
+  return (
+    <section className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
+      <h2 className="flex items-center gap-2 font-display text-lg font-semibold">
+        <KeyRound className="h-5 w-5 text-primary" aria-hidden /> Password
+      </h2>
+      <form
+        noValidate
+        className="mt-4 space-y-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          setFieldErrors({});
+          if (unmet.length > 0) {
+            setFieldErrors({ newPassword: "Your new password does not meet the requirements." });
+            return;
+          }
+          if (newPassword !== confirmPassword) {
+            setFieldErrors({ confirmPassword: "The two passwords do not match." });
+            return;
+          }
+          mutation.mutate();
+        }}
+      >
+        <Field
+          label="Current password"
+          htmlFor="current-password"
+          error={fieldErrors.currentPassword}
+        >
+          <Input
+            id="current-password"
+            type="password"
+            required
+            value={currentPassword}
+            onChange={(event) => setCurrentPassword(event.target.value)}
+            autoComplete="current-password"
+          />
+        </Field>
+
+        <Field label="New password" htmlFor="new-password" error={fieldErrors.newPassword}>
+          <Input
+            id="new-password"
+            type="password"
+            required
+            value={newPassword}
+            onChange={(event) => setNewPassword(event.target.value)}
+            autoComplete="new-password"
+            aria-describedby="password-rules"
+          />
+        </Field>
+
+        <ul id="password-rules" className="space-y-1 text-xs">
+          {PASSWORD_RULES.map((rule) => {
+            const met = rule.test(newPassword);
+            return (
+              <li
+                key={rule.id}
+                className={met ? "flex items-center gap-1.5 text-success" : "flex items-center gap-1.5 text-muted-foreground"}
+              >
+                {met ? (
+                  <Check className="h-3.5 w-3.5" aria-hidden />
+                ) : (
+                  <X className="h-3.5 w-3.5" aria-hidden />
+                )}
+                {rule.label}
+              </li>
+            );
+          })}
+        </ul>
+
+        <Field
+          label="Confirm new password"
+          htmlFor="confirm-password"
+          error={fieldErrors.confirmPassword}
+        >
+          <Input
+            id="confirm-password"
+            type="password"
+            required
+            value={confirmPassword}
+            onChange={(event) => setConfirmPassword(event.target.value)}
+            autoComplete="new-password"
+          />
+        </Field>
+
+        <Button type="submit" disabled={mutation.isPending}>
+          {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Change password
+        </Button>
+      </form>
+    </section>
   );
 }

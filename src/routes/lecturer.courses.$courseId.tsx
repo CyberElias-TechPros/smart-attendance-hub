@@ -1,226 +1,465 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useSuspenseQuery, useQuery, useQueryClient, queryOptions } from "@tanstack/react-query";
-import { useServerFn } from "@tanstack/react-start";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
-  lecturerCourses, courseReport, lecturerSessionsFor,
-  startSession, endSession,
-} from "@/lib/api.functions";
-import { PageHeader } from "@/components/AppShell";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
-import { Progress } from "@/components/ui/progress";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { PlayCircle, MapPin, ChevronRight, ArrowLeft } from "lucide-react";
+  ArrowLeft,
+  Download,
+  FileSpreadsheet,
+  Loader2,
+  MapPin,
+  PlayCircle,
+  Radio,
+} from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import { exportPDF, exportExcel } from "@/lib/exporters";
-import { FileDown, FileSpreadsheet } from "lucide-react";
-import { CourseGlyph } from "@/lib/courseIcons";
+
+import { PageHeader, StatCard } from "@/components/AppShell";
+import { Column, DataTable } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { QueryBoundary } from "@/components/QueryBoundary";
+import { RouteTransition } from "@/components/RouteTransition";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import type { AttendanceSession, CourseReport } from "../../shared/schemas";
+import { api, errorMessage } from "@/lib/api";
 import { useAtRiskThreshold } from "@/lib/useSiteSettings";
-import { burstCelebrate } from "@/lib/confetti";
+import { Field } from "./admin.students";
 
-const coursesQO = queryOptions({ queryKey: ["lecturer", "courses"], queryFn: () => lecturerCourses() });
+export const Route = createFileRoute("/lecturer/courses/$courseId")({ component: CourseDetail });
 
-export const Route = createFileRoute("/lecturer/courses/$courseId")({
-  loader: ({ context }) => context.queryClient.ensureQueryData(coursesQO),
-  component: CourseDetailPage,
-});
+type ReportStudent = CourseReport["students"][number];
 
-function CourseDetailPage() {
+function CourseDetail() {
   const { courseId } = Route.useParams();
-  const { data: courses } = useSuspenseQuery(coursesQO);
-  const course = courses.find((c) => c.id === courseId);
-  const qc = useQueryClient();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const threshold = useAtRiskThreshold();
-  const startFn = useServerFn(startSession);
-  const endFn = useServerFn(endSession);
+  const [startOpen, setStartOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
-  const reportQ = useQuery({
-    queryKey: ["report", courseId],
-    queryFn: () => courseReport({ data: { courseId } }),
-    enabled: Boolean(courseId),
-  });
-  const sessionsQ = useQuery({
-    queryKey: ["lecturer-sessions", courseId],
-    queryFn: () => lecturerSessionsFor({ data: { courseId } }),
-    enabled: Boolean(courseId),
+  const query = useQuery({
+    queryKey: ["courses", courseId, "detail"],
+    queryFn: () => api.courseDetail(courseId),
   });
 
-  const [duration, setDuration] = useState(15);
-  const [topic, setTopic] = useState("");
-  const [useGeo, setUseGeo] = useState(false);
-  const [radius, setRadius] = useState(150);
-  const [starting, setStarting] = useState(false);
+  const liveSession = (query.data?.sessions ?? []).find(
+    (session) => !session.endedAt && session.expiresAt > Date.now(),
+  );
 
-  const openSession = sessionsQ.data?.find((s) => !s.endedAt && s.expiresAt > Date.now());
-
-  if (!course)
-    return (
-      <div className="grid h-40 place-items-center text-muted-foreground">
-        Course not found.
-      </div>
-    );
-
-  const start = async () => {
-    setStarting(true);
+  const runExport = async (format: "pdf" | "excel") => {
+    const report = query.data?.report;
+    if (!report) return;
+    setExporting(true);
     try {
-      let coords: { latitude?: number; longitude?: number; radiusMeters?: number } = {};
-      if (useGeo) {
-        const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
-          navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000 }),
-        );
-        coords = { latitude: pos.coords.latitude, longitude: pos.coords.longitude, radiusMeters: radius };
-      }
-      const s = await startFn({
-        data: { courseId, durationMinutes: duration, topic: topic || undefined, ...coords },
-      });
-      toast.success("Session started");
-      qc.invalidateQueries();
-      navigate({ to: "/lecturer/sessions/$sessionId", params: { sessionId: s.id } });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to start");
+      const { exportCoursePDF, exportCourseExcel } = await import("@/lib/exporters");
+      if (format === "pdf") await exportCoursePDF(report, threshold);
+      else await exportCourseExcel(report);
+      toast.success("Report exported");
+    } catch (error) {
+      toast.error(errorMessage(error));
     } finally {
-      setStarting(false);
+      setExporting(false);
     }
   };
 
+  const studentColumns: Column<ReportStudent>[] = [
+    { key: "name", header: "Student", render: (row) => row.name },
+    {
+      key: "matric",
+      header: "Matric no.",
+      render: (row) => <span className="font-mono text-xs">{row.matricNo}</span>,
+    },
+    { key: "attended", header: "Attended", hideOnMobile: true, render: (row) => row.attended },
+    {
+      key: "percentage",
+      header: "Attendance",
+      render: (row) => (
+        <Badge variant={row.percentage < threshold ? "destructive" : "secondary"}>
+          {row.percentage}%
+        </Badge>
+      ),
+    },
+  ];
+
+  const sessionColumns: Column<AttendanceSession>[] = [
+    {
+      key: "startedAt",
+      header: "Started",
+      render: (session) => (
+        <span className="whitespace-nowrap">{new Date(session.startedAt).toLocaleString()}</span>
+      ),
+    },
+    {
+      key: "topic",
+      header: "Topic",
+      hideOnMobile: true,
+      render: (session) => session.topic ?? <span className="text-muted-foreground">—</span>,
+    },
+    {
+      key: "attended",
+      header: "Present",
+      render: (session) => (
+        <span className="font-mono">
+          {session.attendedCount ?? 0}/{session.enrolledCount ?? 0}
+        </span>
+      ),
+    },
+    {
+      key: "status",
+      header: "Status",
+      render: (session) =>
+        !session.endedAt && session.expiresAt > Date.now() ? (
+          <Badge variant="secondary" className="gap-1 bg-success/15 text-success">
+            <Radio className="h-3 w-3" /> Live
+          </Badge>
+        ) : (
+          <Badge variant="outline">Closed</Badge>
+        ),
+    },
+  ];
+
   return (
-    <>
-      <div className="mb-4 flex items-center gap-3">
-        <button onClick={() => navigate({ to: "/lecturer/courses" })} className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="mr-1 h-4 w-4" /> All courses
-        </button>
-        {course && <CourseGlyph icon={course.icon} color={course.color} seed={course.code} size="md" />}
-      </div>
-      <PageHeader
-        title={`${course.code} — ${course.title}`}
-        subtitle={`Level ${course.level} · ${course.units} units · ${course.enrolledStudentIds.length} students`}
-        actions={
-          <div className="flex gap-2">
-            <Button variant="outline" disabled={!reportQ.data} onClick={() => reportQ.data && exportPDF(reportQ.data)}><FileDown className="mr-2 h-4 w-4" /> PDF</Button>
-            <Button variant="outline" disabled={!reportQ.data} onClick={() => reportQ.data && exportExcel(reportQ.data)}><FileSpreadsheet className="mr-2 h-4 w-4" /> Excel</Button>
-          </div>
-        }
-      />
+    <RouteTransition>
+      <Button variant="ghost" size="sm" asChild className="mb-2 -ml-2">
+        <Link to="/lecturer/courses">
+          <ArrowLeft className="mr-2 h-4 w-4" /> All courses
+        </Link>
+      </Button>
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-1">
-          {openSession ? (
-            <div className="rounded-2xl border border-primary/40 bg-primary/5 p-6 shadow-elegant">
-              <div className="text-xs font-medium uppercase tracking-widest text-primary">Session in progress</div>
-              <div className="mt-2 font-display text-3xl font-semibold tracking-widest">{openSession.code}</div>
-              <div className="mt-1 text-sm text-muted-foreground">
-                Ends {new Date(openSession.expiresAt).toLocaleTimeString()}
-              </div>
-              <div className="mt-4 flex gap-2">
-                <Button className="flex-1" onClick={() => navigate({ to: "/lecturer/sessions/$sessionId", params: { sessionId: openSession.id } })}>
-                  Open live view
-                </Button>
-                <Button variant="outline" onClick={async () => { await endFn({ data: { sessionId: openSession.id } }); burstCelebrate(); qc.invalidateQueries(); toast.success(`${reportQ.data?.students?.length ?? 0} students reached`); }}>End</Button>
-              </div>
-            </div>
-          ) : (
-            <div className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
-              <h2 className="font-display text-lg font-semibold">Start attendance</h2>
-              <p className="text-xs text-muted-foreground">A unique code & QR will be generated.</p>
-              <div className="mt-5 space-y-4">
-                <div className="space-y-1.5">
-                  <Label>Topic (optional)</Label>
-                  <Input value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. Recursion basics" />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Duration (minutes)</Label>
-                  <Input type="number" min={1} max={240} value={duration} onChange={(e) => setDuration(Number(e.target.value))} />
-                </div>
-                <div className="flex items-start justify-between gap-3 rounded-xl border border-border/60 p-3">
-                  <div className="flex items-start gap-2">
-                    <MapPin className="mt-0.5 h-4 w-4 text-muted-foreground" />
-                    <div>
-                      <div className="text-sm font-medium">GPS verification</div>
-                      <div className="text-xs text-muted-foreground">Restrict sign-ins to the venue.</div>
-                    </div>
-                  </div>
-                  <Switch checked={useGeo} onCheckedChange={setUseGeo} />
-                </div>
-                {useGeo && (
-                  <div className="space-y-1.5">
-                    <Label>Radius (meters)</Label>
-                    <Input type="number" min={10} max={5000} value={radius} onChange={(e) => setRadius(Number(e.target.value))} />
-                  </div>
-                )}
-                <Button className="w-full" onClick={start} disabled={starting}>
-                  <PlayCircle className="mr-2 h-4 w-4" /> Start session
-                </Button>
-              </div>
-            </div>
-          )}
-        </div>
+      <QueryBoundary
+        isLoading={query.isPending}
+        error={query.error}
+        data={query.data}
+        onRetry={() => query.refetch()}
+        loadingLabel="Loading course"
+      >
+        {(data) => (
+          <>
+            <PageHeader
+              title={`${data.course.code} — ${data.course.title}`}
+              subtitle={`${data.course.level} level · ${data.course.units} units · ${data.course.departmentName ?? "No department"}`}
+              actions={
+                liveSession ? (
+                  <Button asChild>
+                    <Link
+                      to="/lecturer/sessions/$sessionId"
+                      params={{ sessionId: liveSession.id }}
+                    >
+                      <Radio className="mr-2 h-4 w-4" /> Open live session
+                    </Link>
+                  </Button>
+                ) : (
+                  <Button onClick={() => setStartOpen(true)}>
+                    <PlayCircle className="mr-2 h-4 w-4" /> Start session
+                  </Button>
+                )
+              }
+            />
 
-        <div className="lg:col-span-2 space-y-6">
-          <div className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
-            <div className="flex items-center justify-between">
-              <h2 className="font-display text-lg font-semibold">Student attendance</h2>
-              <div className="text-xs text-muted-foreground">{reportQ.data?.totalSessions ?? 0} sessions held</div>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <StatCard label="Enrolled" value={data.course.enrolledCount} />
+              <StatCard label="Sessions held" value={data.report?.totalSessions ?? 0} />
+              <StatCard
+                label="At risk"
+                value={
+                  (data.report?.students ?? []).filter((s) => s.percentage < threshold).length
+                }
+              />
             </div>
-            <div className="mt-4 max-h-[420px] overflow-auto rounded-xl border border-border/60">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Student</TableHead>
-                    <TableHead>Matric</TableHead>
-                    <TableHead className="w-48">%</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {(reportQ.data?.students ?? []).map((s) => (
-                    <TableRow key={s.id}>
-                      <TableCell className="font-medium">{s.name}</TableCell>
-                      <TableCell className="font-mono text-xs">{s.matricNo}</TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Progress value={s.percentage} className="h-2" />
-                          <span className={s.percentage < threshold ? "text-destructive font-mono text-xs" : "font-mono text-xs"}>{s.percentage}%</span>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          </div>
 
-          <div className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
-            <h2 className="font-display text-lg font-semibold">Recent sessions</h2>
-            <ul className="mt-3 divide-y divide-border/60">
-              {(sessionsQ.data ?? []).map((s) => (
-                <li key={s.id}>
-                  <button
-                    onClick={() => navigate({ to: "/lecturer/sessions/$sessionId", params: { sessionId: s.id } })}
-                    className="flex w-full items-center justify-between py-3 text-left hover:opacity-80"
+            <Tabs defaultValue="students" className="mt-8">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <TabsList>
+                  <TabsTrigger value="students">Students</TabsTrigger>
+                  <TabsTrigger value="sessions">Sessions</TabsTrigger>
+                </TabsList>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={exporting || !data.report}
+                    onClick={() => runExport("pdf")}
                   >
-                    <div>
-                      <div className="text-sm font-medium">{new Date(s.startedAt).toLocaleString()}</div>
-                      <div className="text-xs text-muted-foreground">Code {s.code}{s.topic ? ` · ${s.topic}` : ""}</div>
-                    </div>
-                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                      <span className={`rounded-full px-2 py-0.5 ${s.endedAt ? "bg-muted" : "bg-success/10 text-success"}`}>
-                        {s.endedAt ? "closed" : "live"}
-                      </span>
-                      <ChevronRight className="h-4 w-4" />
-                    </div>
-                  </button>
-                </li>
-              ))}
-              {(sessionsQ.data?.length ?? 0) === 0 && (
-                <li className="py-6 text-center text-sm text-muted-foreground">No sessions yet</li>
-              )}
-            </ul>
+                    <Download className="mr-2 h-4 w-4" /> PDF
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={exporting || !data.report}
+                    onClick={() => runExport("excel")}
+                  >
+                    <FileSpreadsheet className="mr-2 h-4 w-4" /> Excel
+                  </Button>
+                </div>
+              </div>
+
+              <TabsContent value="students" className="mt-4">
+                <DataTable
+                  columns={studentColumns}
+                  rows={data.report?.students ?? []}
+                  getRowKey={(row) => row.id}
+                  emptyState={
+                    <EmptyState
+                      title="No students enrolled"
+                      description="An administrator can enrol students into this course."
+                    />
+                  }
+                />
+              </TabsContent>
+
+              <TabsContent value="sessions" className="mt-4">
+                <DataTable
+                  columns={sessionColumns}
+                  rows={data.sessions}
+                  getRowKey={(session) => session.id}
+                  onRowClick={(session) =>
+                    navigate({
+                      to: "/lecturer/sessions/$sessionId",
+                      params: { sessionId: session.id },
+                    })
+                  }
+                  emptyState={
+                    <EmptyState
+                      icon={<PlayCircle className="h-7 w-7" />}
+                      title="No sessions yet"
+                      description="Start a session to begin taking attendance."
+                      action={
+                        <Button onClick={() => setStartOpen(true)}>
+                          <PlayCircle className="mr-2 h-4 w-4" /> Start session
+                        </Button>
+                      }
+                    />
+                  }
+                />
+              </TabsContent>
+            </Tabs>
+
+            <StartSessionDialog
+              open={startOpen}
+              onOpenChange={setStartOpen}
+              courseId={courseId}
+              onStarted={(session) => {
+                queryClient.invalidateQueries({ queryKey: ["courses", courseId, "detail"] });
+                queryClient.invalidateQueries({ queryKey: ["lecturer"] });
+                navigate({
+                  to: "/lecturer/sessions/$sessionId",
+                  params: { sessionId: session.id },
+                });
+              }}
+            />
+          </>
+        )}
+      </QueryBoundary>
+    </RouteTransition>
+  );
+}
+
+export function StartSessionDialog({
+  open,
+  onOpenChange,
+  courseId,
+  onStarted,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  courseId: string;
+  onStarted: (session: AttendanceSession) => void;
+}) {
+  const [duration, setDuration] = useState(15);
+  const [topic, setTopic] = useState("");
+  const [geofence, setGeofence] = useState(false);
+  const [radius, setRadius] = useState(150);
+  const [coords, setCoords] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
+
+  const startMutation = useMutation({
+    mutationFn: () =>
+      api.startSession({
+        courseId,
+        durationMinutes: duration,
+        topic: topic.trim() || undefined,
+        ...(geofence && coords
+          ? { latitude: coords.latitude, longitude: coords.longitude, radiusMeters: radius }
+          : {}),
+      }),
+    onSuccess: (data) => {
+      toast.success("Session started");
+      onOpenChange(false);
+      onStarted(data.session);
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  // Geolocation is optional, but if the lecturer asks for a geofence we must
+  // surface failures instead of silently starting an unfenced session.
+  const captureLocation = () => {
+    if (!("geolocation" in navigator)) {
+      setLocationError("This device does not support location services.");
+      return;
+    }
+    setLocating(true);
+    setLocationError(null);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setCoords({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        });
+        setLocating(false);
+      },
+      (error) => {
+        setLocating(false);
+        setCoords(null);
+        setLocationError(
+          error.code === error.PERMISSION_DENIED
+            ? "Location permission was denied. Allow it in your browser settings to use a geofence."
+            : "Could not determine your location. Try again near a window or disable the geofence.",
+        );
+      },
+      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 0 },
+    );
+  };
+
+  const geofenceIncomplete = geofence && !coords;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Start attendance session</DialogTitle>
+          <DialogDescription>
+            Students sign in with the generated code or by scanning the QR code.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form
+          id="start-session-form"
+          noValidate
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (geofenceIncomplete) {
+              setLocationError("Capture the venue location first, or turn the geofence off.");
+              return;
+            }
+            startMutation.mutate();
+          }}
+          className="space-y-4"
+        >
+          <Field
+            label="Duration (minutes)"
+            htmlFor="session-duration"
+            hint="The code stops working when the session expires."
+          >
+            <Input
+              id="session-duration"
+              type="number"
+              min={1}
+              max={240}
+              required
+              value={duration}
+              onChange={(e) => setDuration(Number(e.target.value))}
+            />
+          </Field>
+
+          <Field label="Topic (optional)" htmlFor="session-topic">
+            <Input
+              id="session-topic"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              placeholder="Week 5 — Binary trees"
+              maxLength={160}
+            />
+          </Field>
+
+          <div className="rounded-xl border border-border/60 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium">Restrict to venue</div>
+                <div className="text-xs text-muted-foreground">
+                  Only students physically nearby can sign in.
+                </div>
+              </div>
+              <Switch
+                checked={geofence}
+                aria-label="Restrict to venue"
+                onCheckedChange={(checked) => {
+                  setGeofence(checked);
+                  setLocationError(null);
+                  if (checked) captureLocation();
+                  else setCoords(null);
+                }}
+              />
+            </div>
+
+            {geofence && (
+              <div className="mt-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={captureLocation}
+                    disabled={locating}
+                  >
+                    {locating ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <MapPin className="mr-2 h-4 w-4" />
+                    )}
+                    {coords ? "Update location" : "Capture location"}
+                  </Button>
+                  {coords && (
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {coords.latitude.toFixed(5)}, {coords.longitude.toFixed(5)}
+                    </span>
+                  )}
+                </div>
+                <Field label="Radius (metres)" htmlFor="session-radius">
+                  <Input
+                    id="session-radius"
+                    type="number"
+                    min={10}
+                    max={5000}
+                    value={radius}
+                    onChange={(e) => setRadius(Number(e.target.value))}
+                  />
+                </Field>
+              </div>
+            )}
+
+            {locationError && (
+              <p role="alert" className="mt-3 text-sm text-destructive">
+                {locationError}
+              </p>
+            )}
           </div>
-        </div>
-      </div>
-    </>
+        </form>
+
+        <DialogFooter>
+          <Button variant="outline" type="button" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form="start-session-form"
+            disabled={startMutation.isPending || locating}
+          >
+            {startMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Start session
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

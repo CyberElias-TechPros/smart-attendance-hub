@@ -1,233 +1,443 @@
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { useSuspenseQuery, useQueryClient, queryOptions } from "@tanstack/react-query";
-import { useServerFn } from "@tanstack/react-start";
-import { listUsers, listDepartments, createStudent, deleteUser, updateStudent } from "@/lib/api.functions";
-import { PageHeader } from "@/components/AppShell";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
-import { Search, Pencil } from "lucide-react";
+import { GraduationCap, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import { RouteTransition } from "@/components/RouteTransition";
+
+import { PageHeader } from "@/components/AppShell";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { Column, DataTable, Pagination, SearchInput, useDebounced } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
+import { QueryBoundary } from "@/components/QueryBoundary";
+import { RouteTransition } from "@/components/RouteTransition";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import type { PublicUser } from "../../shared/schemas";
+import { ApiClientError, api, errorMessage } from "@/lib/api";
 
-const studentsQO = queryOptions({
-  queryKey: ["users", "student"],
-  queryFn: () => listUsers({ data: { role: "student" } }),
-});
-const deptsQO = queryOptions({ queryKey: ["departments"], queryFn: () => listDepartments() });
+export const Route = createFileRoute("/admin/students")({ component: StudentsPage });
 
-export const Route = createFileRoute("/admin/students")({
-  loader: async ({ context }) => {
-    await Promise.all([
-      context.queryClient.ensureQueryData(studentsQO),
-      context.queryClient.ensureQueryData(deptsQO),
-    ]);
-  },
-  component: StudentsPage,
-});
+const LEVELS = ["100", "200", "300", "400", "500"];
+const PAGE_SIZE = 20;
+
+interface FormState {
+  id?: string;
+  name: string;
+  email: string;
+  matricNo: string;
+  departmentId: string;
+  level: string;
+  password: string;
+}
+
+const emptyForm: FormState = {
+  name: "",
+  email: "",
+  matricNo: "",
+  departmentId: "",
+  level: "100",
+  password: "",
+};
 
 function StudentsPage() {
-  const { data: students } = useSuspenseQuery(studentsQO);
-  const { data: depts } = useSuspenseQuery(deptsQO);
-  const qc = useQueryClient();
-  const createFn = useServerFn(createStudent);
-  const delFn = useServerFn(deleteUser);
-  const editFn = useServerFn(updateStudent);
-  const [q, setQ] = useState("");
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<null | (typeof students)[number]>(null);
-  const [form, setForm] = useState({ name: "", email: "", matricNo: "", departmentId: "", level: "100", password: "" });
-  const [editForm, setEditForm] = useState({ name: "", email: "", matricNo: "", departmentId: "", level: "100", password: "" });
+  const queryClient = useQueryClient();
+  const [page, setPage] = useState(1);
+  const [searchInput, setSearchInput] = useState("");
+  const search = useDebounced(searchInput);
+  const [sort, setSort] = useState("name");
+  const [dir, setDir] = useState<"asc" | "desc">("asc");
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [form, setForm] = useState<FormState>(emptyForm);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [deleteTarget, setDeleteTarget] = useState<PublicUser | null>(null);
 
-  const openEdit = (s: (typeof students)[number]) => {
-    setEditing(s);
-    setEditForm({ name: s.name, email: s.email, matricNo: s.matricNo ?? "", departmentId: s.departmentId ?? "", level: s.level ?? "100", password: "" });
+  // Reset to the first page whenever the filter changes, otherwise the user can
+  // land on an out-of-range page showing nothing.
+  const effectivePage = page;
+
+  const studentsQuery = useQuery({
+    queryKey: ["admin", "users", "student", { page: effectivePage, search, sort, dir }],
+    queryFn: () =>
+      api.listUsers({ role: "student", page: effectivePage, pageSize: PAGE_SIZE, search, sort, dir }),
+    placeholderData: keepPreviousData,
+  });
+
+  const departmentsQuery = useQuery({
+    queryKey: ["departments"],
+    queryFn: () => api.departments(),
+  });
+  const departments = departmentsQuery.data?.items ?? [];
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+    queryClient.invalidateQueries({ queryKey: ["admin", "overview"] });
   };
-  const saveEdit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editing) return;
-    try {
-      await editFn({ data: { id: editing.id, ...editForm } });
-      toast.success("Student updated");
-      setEditing(null);
-      qc.invalidateQueries({ queryKey: ["users"] });
-    } catch (err) { toast.error(err instanceof Error ? err.message : "Failed"); }
+
+  const saveMutation = useMutation({
+    mutationFn: async (values: FormState) => {
+      const payload: Record<string, unknown> = {
+        name: values.name,
+        email: values.email,
+        matricNo: values.matricNo,
+        departmentId: values.departmentId,
+        level: values.level,
+      };
+      if (values.id) {
+        if (values.password) payload.password = values.password;
+        return api.updateStudent({ ...payload, id: values.id });
+      }
+      return api.createStudent({ ...payload, password: values.password });
+    },
+    onSuccess: (_data, values) => {
+      toast.success(values.id ? "Student updated" : "Student added");
+      setDialogOpen(false);
+      setFieldErrors({});
+      invalidate();
+    },
+    onError: (error) => {
+      if (error instanceof ApiClientError && error.fields) setFieldErrors(error.fields);
+      toast.error(errorMessage(error));
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => api.deleteUser(id),
+    onSuccess: () => {
+      toast.success("Student removed");
+      invalidate();
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  const openCreate = () => {
+    setForm({ ...emptyForm, departmentId: departments[0]?.id ?? "" });
+    setFieldErrors({});
+    setDialogOpen(true);
   };
 
-  const filtered = students.filter(
-    (s) =>
-      s.name.toLowerCase().includes(q.toLowerCase()) ||
-      s.email.toLowerCase().includes(q.toLowerCase()) ||
-      (s.matricNo ?? "").toLowerCase().includes(q.toLowerCase()),
-  );
+  const openEdit = (student: PublicUser) => {
+    setForm({
+      id: student.id,
+      name: student.name,
+      email: student.email,
+      matricNo: student.matricNo ?? "",
+      departmentId: student.departmentId ?? departments[0]?.id ?? "",
+      level: student.level ?? "100",
+      password: "",
+    });
+    setFieldErrors({});
+    setDialogOpen(true);
+  };
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      await createFn({ data: form });
-      toast.success("Student added");
-      setOpen(false);
-       setForm({ name: "", email: "", matricNo: "", departmentId: "", level: "100", password: "" });
-      qc.invalidateQueries({ queryKey: ["users"] });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed");
+  const toggleSort = (key: string) => {
+    if (sort === key) setDir(dir === "asc" ? "desc" : "asc");
+    else {
+      setSort(key);
+      setDir("asc");
     }
+    setPage(1);
   };
-  const remove = async (id: string) => {
-    try {
-      await delFn({ data: { id } });
-      toast.success("Removed");
-      qc.invalidateQueries({ queryKey: ["users"] });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed");
-    }
-  };
+
+  const columns: Column<PublicUser>[] = [
+    {
+      key: "name",
+      header: "Name",
+      sortable: true,
+      render: (student) => <span className="font-medium">{student.name}</span>,
+    },
+    {
+      key: "matricNo",
+      header: "Matric no.",
+      render: (student) => <span className="font-mono text-xs">{student.matricNo ?? "—"}</span>,
+    },
+    {
+      key: "email",
+      header: "Email",
+      sortable: true,
+      hideOnMobile: true,
+      render: (student) => <span className="text-muted-foreground">{student.email}</span>,
+    },
+    {
+      key: "department",
+      header: "Department",
+      hideOnMobile: true,
+      render: (student) => student.departmentName ?? "—",
+    },
+    { key: "level", header: "Level", sortable: true, render: (student) => student.level ?? "—" },
+    {
+      key: "actions",
+      header: "Actions",
+      className: "text-right",
+      render: (student) => (
+        <div className="flex justify-end gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => openEdit(student)}
+            aria-label={`Edit ${student.name}`}
+          >
+            <Pencil className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setDeleteTarget(student)}
+            aria-label={`Remove ${student.name}`}
+            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
+      ),
+    },
+  ];
+
+  const noDepartments = departmentsQuery.isSuccess && departments.length === 0;
 
   return (
-    <>
+    <RouteTransition>
       <PageHeader
         title="Students"
-        subtitle={`${students.length} registered students`}
+        subtitle="Register students and manage their enrolment details."
         actions={
-          <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger asChild>
-              <Button><Plus className="mr-2 h-4 w-4" /> Add student</Button>
-            </DialogTrigger>
-            <DialogContent>
-              <form onSubmit={submit}>
-                <DialogHeader>
-                  <DialogTitle>Register student</DialogTitle>
-                </DialogHeader>
-                <div className="mt-4 grid gap-3">
-                  <Field label="Full name"><Input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
-                  <Field label="Email"><Input required type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></Field>
-                  <Field label="Matric number"><Input required value={form.matricNo} onChange={(e) => setForm({ ...form, matricNo: e.target.value })} /></Field>
-                  <div className="grid grid-cols-2 gap-3">
-                    <Field label="Department">
-                      <Select value={form.departmentId} onValueChange={(v) => setForm({ ...form, departmentId: v })}>
-                        <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
-                        <SelectContent>
-                          {depts.map((d) => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                    <Field label="Level">
-                      <Select value={form.level} onValueChange={(v) => setForm({ ...form, level: v })}>
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          {["100", "200", "300", "400", "500"].map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                  </div>
-                  <Field label="Initial password"><Input required type="text" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></Field>
-                </div>
-                <DialogFooter className="mt-6"><Button type="submit">Create student</Button></DialogFooter>
-              </form>
-            </DialogContent>
-          </Dialog>
+          <Button onClick={openCreate} disabled={noDepartments}>
+            <Plus className="mr-2 h-4 w-4" /> Add student
+          </Button>
         }
       />
-      <Dialog open={!!editing} onOpenChange={(v) => !v && setEditing(null)}>
-        <DialogContent>
-          <form onSubmit={saveEdit}>
-            <DialogHeader><DialogTitle>Edit student</DialogTitle></DialogHeader>
-            <div className="mt-4 grid gap-3">
-              <Field label="Full name"><Input required value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} /></Field>
-              <Field label="Email"><Input required type="email" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} /></Field>
-              <Field label="Matric number"><Input required value={editForm.matricNo} onChange={(e) => setEditForm({ ...editForm, matricNo: e.target.value })} /></Field>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Department">
-                  <Select value={editForm.departmentId} onValueChange={(v) => setEditForm({ ...editForm, departmentId: v })}>
-                    <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
-                    <SelectContent>{depts.map((d) => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}</SelectContent>
-                  </Select>
-                </Field>
-                <Field label="Level">
-                  <Select value={editForm.level} onValueChange={(v) => setEditForm({ ...editForm, level: v })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>{["100", "200", "300", "400", "500"].map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}</SelectContent>
-                  </Select>
-                </Field>
-              </div>
-              <Field label="New password (leave blank to keep)"><Input type="text" value={editForm.password} onChange={(e) => setEditForm({ ...editForm, password: e.target.value })} placeholder="••••••••" /></Field>
+
+      {noDepartments && (
+        <div className="mb-4 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm">
+          Create a department first — every student must belong to one.
+        </div>
+      )}
+
+      <div className="mb-4">
+        <SearchInput
+          value={searchInput}
+          onChange={(value) => {
+            setSearchInput(value);
+            setPage(1);
+          }}
+          placeholder="Search by name, email or matric no."
+          label="Search students"
+        />
+      </div>
+
+      <QueryBoundary
+        isLoading={studentsQuery.isPending}
+        error={studentsQuery.error}
+        data={studentsQuery.data}
+        onRetry={() => studentsQuery.refetch()}
+        loadingLabel="Loading students"
+      >
+        {(data) => (
+          <>
+            <DataTable
+              columns={columns}
+              rows={data.items}
+              getRowKey={(student) => student.id}
+              sort={sort}
+              dir={dir}
+              onSortChange={toggleSort}
+              emptyState={
+                <EmptyState
+                  icon={<GraduationCap className="h-7 w-7" />}
+                  title={search ? "No matching students" : "No students yet"}
+                  description={
+                    search
+                      ? "Try a different name, email or matriculation number."
+                      : "Add your first student to start tracking attendance."
+                  }
+                  action={
+                    !search && (
+                      <Button onClick={openCreate} disabled={noDepartments}>
+                        <Plus className="mr-2 h-4 w-4" /> Add student
+                      </Button>
+                    )
+                  }
+                />
+              }
+            />
+            <Pagination
+              page={data.page}
+              totalPages={data.totalPages}
+              total={data.total}
+              pageSize={data.pageSize}
+              onPageChange={setPage}
+            />
+          </>
+        )}
+      </QueryBoundary>
+
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{form.id ? "Edit student" : "Add student"}</DialogTitle>
+            <DialogDescription>
+              {form.id
+                ? "Update this student's details. Leave the password blank to keep it unchanged."
+                : "Create a student account. They can sign in immediately with these credentials."}
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            id="student-form"
+            noValidate
+            onSubmit={(event) => {
+              event.preventDefault();
+              setFieldErrors({});
+              saveMutation.mutate(form);
+            }}
+            className="space-y-4"
+          >
+            <Field label="Full name" htmlFor="student-name" error={fieldErrors.name}>
+              <Input
+                id="student-name"
+                required
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+              />
+            </Field>
+            <Field label="Email" htmlFor="student-email" error={fieldErrors.email}>
+              <Input
+                id="student-email"
+                type="email"
+                required
+                value={form.email}
+                onChange={(e) => setForm({ ...form, email: e.target.value })}
+              />
+            </Field>
+            <Field
+              label="Matriculation number"
+              htmlFor="student-matric"
+              error={fieldErrors.matricNo}
+            >
+              <Input
+                id="student-matric"
+                required
+                value={form.matricNo}
+                onChange={(e) => setForm({ ...form, matricNo: e.target.value })}
+                placeholder="CSC/21/1001"
+              />
+            </Field>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Department" htmlFor="student-dept" error={fieldErrors.departmentId}>
+                <Select
+                  value={form.departmentId}
+                  onValueChange={(value) => setForm({ ...form, departmentId: value })}
+                >
+                  <SelectTrigger id="student-dept">
+                    <SelectValue placeholder="Select department" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {departments.map((department) => (
+                      <SelectItem key={department.id} value={department.id}>
+                        {department.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Level" htmlFor="student-level" error={fieldErrors.level}>
+                <Select
+                  value={form.level}
+                  onValueChange={(value) => setForm({ ...form, level: value })}
+                >
+                  <SelectTrigger id="student-level">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {LEVELS.map((level) => (
+                      <SelectItem key={level} value={level}>
+                        {level} level
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
             </div>
-            <DialogFooter className="mt-6"><Button type="submit">Save changes</Button></DialogFooter>
+            <Field
+              label={form.id ? "New password (optional)" : "Password"}
+              htmlFor="student-password"
+              error={fieldErrors.password}
+              hint="At least 8 characters."
+            >
+              <Input
+                id="student-password"
+                type="password"
+                autoComplete="new-password"
+                required={!form.id}
+                value={form.password}
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
+              />
+            </Field>
           </form>
+          <DialogFooter>
+            <Button variant="outline" type="button" onClick={() => setDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" form="student-form" disabled={saveMutation.isPending}>
+              {saveMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {form.id ? "Save changes" : "Add student"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
-      <RouteTransition>
-        <div className="mb-4 flex items-center gap-2">
-          <div className="relative w-full max-w-sm">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input placeholder="Search students…" value={q} onChange={(e) => setQ(e.target.value)} className="pl-9" />
-          </div>
-        </div>
-        <div className="rounded-2xl border border-border/70 bg-card shadow-elegant">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Matric</TableHead>
-                <TableHead>Email</TableHead>
-                <TableHead>Dept</TableHead>
-                  <TableHead>Level</TableHead>
-                  <TableHead className="w-24" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.length === 0 && (
-                <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">No students found</TableCell></TableRow>
-              )}
-              {filtered.map((s) => (
-                <TableRow key={s.id}>
-                  <TableCell className="font-medium">{s.name}</TableCell>
-                  <TableCell className="font-mono text-xs">{s.matricNo}</TableCell>
-                  <TableCell className="text-muted-foreground">{s.email}</TableCell>
-                  <TableCell>{depts.find((d) => d.id === s.departmentId)?.code ?? "—"}</TableCell>
-                  <TableCell>{s.level}</TableCell>
-                  <TableCell>
-                    <div className="flex justify-end gap-1">
-                      <Button variant="ghost" size="icon" onClick={() => openEdit(s)}><Pencil className="h-4 w-4 text-muted-foreground" /></Button>
-                      <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <Button variant="ghost" size="icon"><Trash2 className="h-4 w-4 text-destructive" /></Button>
-                        </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Remove {s.name}?</AlertDialogTitle>
-                          <AlertDialogDescription>This can't be undone.</AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction onClick={() => remove(s.id)}>Remove</AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      </RouteTransition>
-    </>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        title={`Remove ${deleteTarget?.name}?`}
+        description="Their account is deactivated and they are unenrolled from all courses. Past attendance records are kept so historical reports stay accurate."
+        confirmLabel="Remove student"
+        onConfirm={async () => {
+          if (deleteTarget) await deleteMutation.mutateAsync(deleteTarget.id);
+          setDeleteTarget(null);
+        }}
+      />
+    </RouteTransition>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+export function Field({
+  label,
+  htmlFor,
+  error,
+  hint,
+  children,
+}: {
+  label: string;
+  htmlFor: string;
+  error?: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="space-y-1.5">
-      <Label>{label}</Label>
+      <Label htmlFor={htmlFor}>{label}</Label>
       {children}
+      {hint && !error && <p className="text-xs text-muted-foreground">{hint}</p>}
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
-

@@ -19,7 +19,7 @@ import { AnimatedNumber } from "@/components/AnimatedNumber";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Avatar } from "@/components/Avatar";
 import { RouteTransition } from "@/components/RouteTransition";
-import { useSiteSettings } from "@/lib/useSiteSettings";
+import { usePublicSettings } from "@/lib/useSiteSettings";
 
 const DEFAULT_MARQUEE = [
   "Faculty of Science",
@@ -31,27 +31,17 @@ const DEFAULT_MARQUEE = [
 ];
 
 export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "SLAMS — Smart Lecture Attendance Management" },
-      {
-        name: "description",
-        content:
-          "Digital lecture attendance for universities: QR sign-in, live sessions, GPS verification, automatic percentages, PDF & Excel reports.",
-      },
-    ],
-  }),
   component: Landing,
 });
 
 function Landing() {
-  const { data: settings } = useSiteSettings();
+  const { data: settings } = usePublicSettings();
   const institution = settings?.institutionName ?? "SLAMS";
   return (
     <div className="min-h-screen">
       <Header institutionName={institution} />
       <RouteTransition>
-        <Hero showFakeStats={settings?.showFakeStats ?? true} />
+        <Hero showFakeStats={settings?.showFakeStats ?? false} />
       </RouteTransition>
       <LogoMarquee items={settings?.marqueeItems} />
       <RouteTransition>
@@ -382,10 +372,10 @@ function Testimonials({ testimonials }: { testimonials?: { name: string; role: s
   );
 }
 
-function CTA({ settings }: { settings?: { demoAccountsEnabled?: boolean; demoPassword?: string; demoEmailDomain?: string; institutionName?: string } }) {
+function CTA({ settings }: { settings?: { demoAccountsEnabled?: boolean; demoEmailDomain?: string; institutionName?: string } }) {
   const domain = settings?.demoEmailDomain ?? "slams.edu";
-  const pw = settings?.demoPassword ?? "password123";
-  const demoOn = settings?.demoAccountsEnabled ?? true;
+  // Demo mode is opt-in and off by default; passwords are never published here.
+  const demoOn = settings?.demoAccountsEnabled ?? false;
   const institution = settings?.institutionName ?? "SLAMS";
   const demos = [
     { r: "Admin", e: `admin@${domain}` },
@@ -420,7 +410,6 @@ function CTA({ settings }: { settings?: { demoAccountsEnabled?: boolean; demoPas
               <div key={x.r} className="rounded-xl bg-background/10 p-3 backdrop-blur">
                 <div className="text-xs uppercase tracking-widest text-primary-foreground/70">{x.r}</div>
                 <div className="mt-1 font-mono">{x.e}</div>
-                <div className="text-xs text-primary-foreground/70">password: {pw}</div>
               </div>
             ))}
           </div>

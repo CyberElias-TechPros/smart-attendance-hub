@@ -1,160 +1,383 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useServerFn } from "@tanstack/react-start";
-import { sessionDetail, endSession, deleteAttendanceRecord } from "@/lib/api.functions";
-import { PageHeader } from "@/components/AppShell";
-import { Button } from "@/components/ui/button";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Progress } from "@/components/ui/progress";
-import { ArrowLeft, Copy, StopCircle, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import QRCode from "qrcode";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, createFileRoute } from "@tanstack/react-router";
+import {
+  ArrowLeft,
+  CheckCircle2,
+  Clock,
+  Copy,
+  Loader2,
+  MapPin,
+  Plus,
+  Radio,
+  StopCircle,
+  Trash2,
+  UserPlus,
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { burstCelebrate } from "@/lib/confetti";
 
-export const Route = createFileRoute("/lecturer/sessions/$sessionId")({
-  component: LiveSessionPage,
-});
+import { PageHeader, StatCard } from "@/components/AppShell";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { QueryBoundary } from "@/components/QueryBoundary";
+import { RouteTransition } from "@/components/RouteTransition";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
+import { api, errorMessage } from "@/lib/api";
 
-function LiveSessionPage() {
+export const Route = createFileRoute("/lecturer/sessions/$sessionId")({ component: SessionPage });
+
+/** Live countdown, recomputed once a second while the session is open. */
+function useCountdown(expiresAt: number | undefined, active: boolean) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  if (!expiresAt) return { text: "—", expired: true, msLeft: 0 };
+  const msLeft = Math.max(0, expiresAt - now);
+  const totalSeconds = Math.floor(msLeft / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return {
+    text: `${minutes}:${String(seconds).padStart(2, "0")}`,
+    expired: msLeft === 0,
+    msLeft,
+  };
+}
+
+function SessionPage() {
   const { sessionId } = Route.useParams();
-  const navigate = useNavigate();
-  const qc = useQueryClient();
-  const endFn = useServerFn(endSession);
-  const delFn = useServerFn(deleteAttendanceRecord);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const queryClient = useQueryClient();
+  const [endOpen, setEndOpen] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<{ id: string; name: string } | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
 
-  const detailQ = useQuery({
-    queryKey: ["session-detail", sessionId],
-    queryFn: () => sessionDetail({ data: { sessionId } }),
-    refetchInterval: 3000,
+  const query = useQuery({
+    queryKey: ["sessions", sessionId],
+    queryFn: () => api.sessionDetail(sessionId),
+    // Poll while the session is live so the lecturer sees arrivals in near
+    // real time; stop polling once it is closed to avoid pointless requests.
+    refetchInterval: (q) => {
+      const detail = q.state.data;
+      if (!detail) return 5_000;
+      const live = !detail.session.endedAt && detail.session.expiresAt > Date.now();
+      return live ? 5_000 : false;
+    },
   });
 
-  const [now, setNow] = useState(Date.now());
+  const session = query.data?.session;
+  const isLive = !!session && !session.endedAt && session.expiresAt > Date.now();
+  const countdown = useCountdown(session?.expiresAt, isLive);
+
+  // Render the QR client-side from the join URL; nothing secret leaves the page
+  // beyond the code the lecturer is already displaying.
+  const joinUrl = useMemo(
+    () =>
+      session ? `${window.location.origin}/student/attend?code=${encodeURIComponent(session.code)}` : "",
+    [session],
+  );
+
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
+    let cancelled = false;
+    if (!joinUrl || !isLive) {
+      setQrDataUrl(null);
+      return;
+    }
+    // `qrcode` is only needed on this screen — load it lazily.
+    import("qrcode")
+      .then(({ default: QRCode }) =>
+        QRCode.toDataURL(joinUrl, { width: 512, margin: 1, errorCorrectionLevel: "M" }),
+      )
+      .then((url) => {
+        if (!cancelled) setQrDataUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setQrDataUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [joinUrl, isLive]);
 
-  const session = detailQ.data?.session;
-  const isOpen = session && !session.endedAt && session.expiresAt > now;
-
-  useEffect(() => {
-    if (!session || !canvasRef.current) return;
-    const url = typeof window !== "undefined" ? `${window.location.origin}/student/attend?code=${session.code}` : session.code;
-    QRCode.toCanvas(canvasRef.current, url, { width: 260, margin: 1, color: { dark: "#0f5c4b", light: "#ffffff" } });
-  }, [session]);
-
-  if (detailQ.isLoading || !detailQ.data)
-    return <div className="grid h-40 place-items-center text-muted-foreground">Loading…</div>;
-
-  const { session: s, course, totalEnrolled, attendance } = detailQ.data;
-  const remainingMs = Math.max(0, (s.endedAt ?? s.expiresAt) - now);
-  const mm = String(Math.floor(remainingMs / 60000)).padStart(2, "0");
-  const ss = String(Math.floor((remainingMs % 60000) / 1000)).padStart(2, "0");
-  const pct = totalEnrolled === 0 ? 0 : Math.round((attendance.length / totalEnrolled) * 100);
-
-  const end = async () => {
-    await endFn({ data: { sessionId } });
-    burstCelebrate();
-    toast.success("Session ended");
-    qc.invalidateQueries();
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["sessions", sessionId] });
+    queryClient.invalidateQueries({ queryKey: ["lecturer"] });
+    if (session) queryClient.invalidateQueries({ queryKey: ["courses", session.courseId] });
   };
 
-  const removeRecord = async (recordId: string) => {
-    await delFn({ data: { recordId } });
-    toast.success("Attendance removed");
-    qc.invalidateQueries({ queryKey: ["session-detail", sessionId] });
+  const endMutation = useMutation({
+    mutationFn: () => api.endSession(sessionId),
+    onSuccess: () => {
+      toast.success("Session ended");
+      invalidate();
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  const extendMutation = useMutation({
+    mutationFn: (minutes: number) => api.extendSession(sessionId, minutes),
+    onSuccess: () => {
+      toast.success("Session extended");
+      invalidate();
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  const markMutation = useMutation({
+    mutationFn: (studentId: string) => api.markAttendance({ sessionId, studentId }),
+    onSuccess: () => {
+      toast.success("Marked present");
+      invalidate();
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: (attendanceId: string) => api.deleteAttendance(attendanceId),
+    onSuccess: () => {
+      toast.success("Attendance removed");
+      invalidate();
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  const copyCode = async () => {
+    if (!session) return;
+    try {
+      await navigator.clipboard.writeText(session.code);
+      toast.success("Code copied");
+    } catch {
+      toast.error("Clipboard unavailable — read the code out instead.");
+    }
   };
 
   return (
-    <>
-      <button onClick={() => navigate({ to: "/lecturer/courses/$courseId", params: { courseId: course.id } })} className="mb-4 inline-flex items-center text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="mr-1 h-4 w-4" /> Back to course
-      </button>
-      <PageHeader
-        title={`${course.code} live session`}
-        subtitle={s.topic ?? `Started ${new Date(s.startedAt).toLocaleTimeString()}`}
-        actions={
-          isOpen && (
-            <Button variant="destructive" onClick={end}><StopCircle className="mr-2 h-4 w-4" /> End session</Button>
-          )
-        }
-      />
+    <RouteTransition>
+      <Button variant="ghost" size="sm" asChild className="mb-2 -ml-2">
+        <Link to="/lecturer/sessions">
+          <ArrowLeft className="mr-2 h-4 w-4" /> All sessions
+        </Link>
+      </Button>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <div className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
-          <div className="flex items-center justify-between text-xs font-medium uppercase tracking-widest">
-            <span className={isOpen ? "text-success" : "text-muted-foreground"}>
-              {isOpen ? "● Live" : "Closed"}
-            </span>
-            <span className="font-mono text-lg text-foreground">{isOpen ? `${mm}:${ss}` : "—"}</span>
-          </div>
-          <div className={`mt-6 flex justify-center ${isOpen ? "animate-pulse-ring rounded-3xl" : "opacity-60"}`}>
-            <div className="rounded-3xl bg-gradient-to-br from-primary/30 via-accent/20 to-primary/30 p-1.5 shadow-glow">
-              <canvas ref={canvasRef} className="rounded-2xl bg-white p-3" />
-            </div>
-          </div>
-          <div className="mt-6 grid grid-cols-2 gap-3">
-            <div className="rounded-xl bg-muted/60 p-3 text-center">
-              <div className="text-xs text-muted-foreground">One-time code</div>
-              <div className="mt-1 font-mono text-2xl font-semibold tracking-widest gradient-text">{s.code}</div>
-            </div>
-            <div className="rounded-xl bg-muted/60 p-3 text-center">
-              <div className="text-xs text-muted-foreground">Signed in</div>
-              <div className="mt-1 font-display text-2xl font-semibold">{attendance.length}/{totalEnrolled}</div>
-            </div>
-          </div>
-          <Button
-            variant="outline"
-            className="mt-4 w-full"
-            onClick={() => {
-              navigator.clipboard.writeText(s.code);
-              toast.success("Code copied");
-            }}
-          >
-            <Copy className="mr-2 h-4 w-4" /> Copy code
-          </Button>
-        </div>
+      <QueryBoundary
+        isLoading={query.isPending}
+        error={query.error}
+        data={query.data}
+        onRetry={() => query.refetch()}
+        loadingLabel="Loading session"
+      >
+        {(data) => {
+          const present = data.attendance.length;
+          const rate =
+            data.totalEnrolled > 0 ? Math.round((present / data.totalEnrolled) * 100) : 0;
 
-        <div className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
-          <div className="flex items-center justify-between">
-            <h2 className="font-display text-lg font-semibold">Live attendance</h2>
-            <div className="w-40"><Progress value={pct} className="h-2" /></div>
-          </div>
-          <div className="mt-4 max-h-[440px] overflow-auto rounded-xl border border-border/60">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>#</TableHead>
-                  <TableHead>Student</TableHead>
-                  <TableHead>Matric</TableHead>
-                  <TableHead className="text-right">Time</TableHead>
-                  <TableHead className="w-10" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {attendance.map((a, i) => (
-                  <TableRow key={a.id} className="animate-fade-up">
-                    <TableCell className="font-mono text-xs text-muted-foreground">{i + 1}</TableCell>
-                    <TableCell className="font-medium">{a.name}</TableCell>
-                    <TableCell className="font-mono text-xs">{a.matricNo}</TableCell>
-                    <TableCell className="text-right font-mono text-xs">{new Date(a.timestamp).toLocaleTimeString()}</TableCell>
-                    <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => removeRecord(a.id)} title="Remove attendance">
-                        <Trash2 className="h-4 w-4" />
+          return (
+            <>
+              <PageHeader
+                title={`${data.course.code} — attendance`}
+                subtitle={
+                  data.session.topic
+                    ? data.session.topic
+                    : `Started ${new Date(data.session.startedAt).toLocaleString()}`
+                }
+                actions={
+                  isLive ? (
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        onClick={() => extendMutation.mutate(10)}
+                        disabled={extendMutation.isPending}
+                      >
+                        <Plus className="mr-2 h-4 w-4" /> 10 min
                       </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {attendance.length === 0 && (
-                  <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground">Waiting for the first sign-in…</TableCell></TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
-        </div>
-      </div>
-    </>
+                      <Button variant="destructive" onClick={() => setEndOpen(true)}>
+                        <StopCircle className="mr-2 h-4 w-4" /> End session
+                      </Button>
+                    </div>
+                  ) : (
+                    <Badge variant="outline">Session closed</Badge>
+                  )
+                }
+              />
+
+              <div className="grid gap-6 lg:grid-cols-[1fr_20rem]">
+                <div className="order-2 space-y-6 lg:order-1">
+                  <div className="grid gap-4 sm:grid-cols-3">
+                    <StatCard label="Present" value={present} icon={CheckCircle2} />
+                    <StatCard label="Enrolled" value={data.totalEnrolled} />
+                    <StatCard label="Attendance rate" value={`${rate}%`} />
+                  </div>
+
+                  <div>
+                    <Progress value={rate} aria-label={`${rate}% of enrolled students present`} />
+                  </div>
+
+                  <section className="rounded-2xl border border-border/70 bg-card p-5 shadow-elegant">
+                    <h2 className="font-display text-lg font-semibold">
+                      Present <span className="text-muted-foreground">({present})</span>
+                    </h2>
+                    {data.attendance.length === 0 ? (
+                      <p className="mt-4 text-sm text-muted-foreground">
+                        No one has signed in yet. Share the code or QR to get started.
+                      </p>
+                    ) : (
+                      <ul className="mt-4 divide-y divide-border/60">
+                        {data.attendance.map((entry) => (
+                          <li
+                            key={entry.id}
+                            className="flex items-center justify-between gap-3 py-2.5"
+                          >
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-medium">{entry.name}</div>
+                              <div className="font-mono text-xs text-muted-foreground">
+                                {entry.matricNo} ·{" "}
+                                {new Date(entry.timestamp).toLocaleTimeString()} · {entry.method}
+                              </div>
+                            </div>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              aria-label={`Remove attendance for ${entry.name}`}
+                              className="shrink-0 text-destructive hover:bg-destructive/10"
+                              onClick={() => setRemoveTarget({ id: entry.id, name: entry.name })}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+
+                  <section className="rounded-2xl border border-border/70 bg-card p-5 shadow-elegant">
+                    <h2 className="font-display text-lg font-semibold">
+                      Absent <span className="text-muted-foreground">({data.absentees.length})</span>
+                    </h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Mark a student manually if their device failed — this is recorded in the
+                      audit log.
+                    </p>
+                    {data.absentees.length === 0 ? (
+                      <p className="mt-4 text-sm text-muted-foreground">
+                        Everyone enrolled has signed in.
+                      </p>
+                    ) : (
+                      <ul className="mt-4 divide-y divide-border/60">
+                        {data.absentees.map((student) => (
+                          <li
+                            key={student.id}
+                            className="flex items-center justify-between gap-3 py-2.5"
+                          >
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-medium">{student.name}</div>
+                              <div className="font-mono text-xs text-muted-foreground">
+                                {student.matricNo}
+                              </div>
+                            </div>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="shrink-0"
+                              disabled={markMutation.isPending}
+                              onClick={() => markMutation.mutate(student.id)}
+                            >
+                              <UserPlus className="mr-2 h-4 w-4" /> Mark present
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                </div>
+
+                <aside className="order-1 lg:order-2">
+                  <div className="sticky top-24 rounded-2xl border border-border/70 bg-card p-5 text-center shadow-elegant">
+                    {isLive ? (
+                      <>
+                        <div className="flex items-center justify-center gap-2 text-sm font-medium text-success">
+                          <span className="relative flex h-2 w-2">
+                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-70" />
+                            <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
+                          </span>
+                          Live
+                        </div>
+                        <div className="mt-4 font-mono text-4xl font-bold tracking-[0.3em]">
+                          {data.session.code}
+                        </div>
+                        <Button variant="outline" size="sm" className="mt-3" onClick={copyCode}>
+                          <Copy className="mr-2 h-4 w-4" /> Copy code
+                        </Button>
+
+                        <div className="mt-5 flex items-center justify-center gap-2 text-sm">
+                          <Clock className="h-4 w-4 text-muted-foreground" aria-hidden />
+                          <span className="font-mono" aria-live="polite">
+                            {countdown.text} remaining
+                          </span>
+                        </div>
+
+                        {qrDataUrl ? (
+                          <img
+                            src={qrDataUrl}
+                            alt={`QR code to sign in to ${data.course.code}`}
+                            className="mx-auto mt-5 h-48 w-48 rounded-xl border border-border/60 bg-white p-2"
+                          />
+                        ) : (
+                          <div className="mx-auto mt-5 flex h-48 w-48 items-center justify-center rounded-xl border border-dashed border-border/60">
+                            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                          </div>
+                        )}
+
+                        {data.session.radiusMeters && (
+                          <p className="mt-4 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+                            <MapPin className="h-3.5 w-3.5" aria-hidden />
+                            Geofenced to {data.session.radiusMeters} m
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      <div className="py-6">
+                        <Radio className="mx-auto h-8 w-8 text-muted-foreground" aria-hidden />
+                        <p className="mt-3 text-sm font-medium">This session is closed</p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {data.session.endedAt
+                            ? `Ended ${new Date(data.session.endedAt).toLocaleString()}`
+                            : `Expired ${new Date(data.session.expiresAt).toLocaleString()}`}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </aside>
+              </div>
+
+              <ConfirmDialog
+                open={endOpen}
+                onOpenChange={setEndOpen}
+                title="End this session?"
+                description="Students will no longer be able to sign in with the code. Attendance already recorded is kept."
+                confirmLabel="End session"
+                onConfirm={async () => {
+                  await endMutation.mutateAsync();
+                  setEndOpen(false);
+                }}
+              />
+
+              <ConfirmDialog
+                open={!!removeTarget}
+                onOpenChange={(open) => !open && setRemoveTarget(null)}
+                title={`Remove ${removeTarget?.name} from this session?`}
+                description="Their attendance record for this session is deleted. This is logged."
+                confirmLabel="Remove attendance"
+                onConfirm={async () => {
+                  if (removeTarget) await removeMutation.mutateAsync(removeTarget.id);
+                  setRemoveTarget(null);
+                }}
+              />
+            </>
+          );
+        }}
+      </QueryBoundary>
+    </RouteTransition>
   );
 }

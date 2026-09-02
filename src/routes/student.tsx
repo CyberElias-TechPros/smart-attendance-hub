@@ -1,29 +1,31 @@
-import { createFileRoute, redirect, Outlet } from "@tanstack/react-router";
-import { me } from "@/lib/api.functions";
+import { Outlet, createFileRoute, redirect } from "@tanstack/react-router";
+import { History, LayoutDashboard, QrCode, Settings } from "lucide-react";
+
 import { AppShell, type NavItem } from "@/components/AppShell";
-import { LayoutDashboard, QrCode, History, Settings } from "lucide-react";
 
 const nav: NavItem[] = [
-  { to: "/student", label: "My Courses", icon: LayoutDashboard },
-  { to: "/student/attend", label: "Sign In", icon: QrCode },
+  { to: "/student", label: "My courses", icon: LayoutDashboard },
+  { to: "/student/attend", label: "Sign in", icon: QrCode },
   { to: "/student/history", label: "History", icon: History },
-  { to: "/settings", label: "Settings", icon: Settings },
+  { to: "/settings", label: "My account", icon: Settings },
 ];
 
 export const Route = createFileRoute("/student")({
-  beforeLoad: async () => {
-    const user = await me();
-    if (!user) throw redirect({ to: "/login" });
-    if (user.role !== "student") throw redirect({ to: user.role === "admin" ? "/admin" : "/lecturer" });
-    return { user };
+  beforeLoad: ({ context, location }) => {
+    if (!context.auth.isAuthenticated) {
+      throw redirect({ to: "/login", search: { redirect: location.href } });
+    }
+    if (context.auth.user!.role !== "student") {
+      throw redirect({ to: context.auth.user!.role === "admin" ? "/admin" : "/lecturer" });
+    }
   },
   component: StudentLayout,
 });
 
 function StudentLayout() {
-  const { user } = Route.useRouteContext();
+  const { auth } = Route.useRouteContext();
   return (
-    <AppShell role="Student" userName={user.name} nav={nav}>
+    <AppShell role="Student" userName={auth.user!.name} nav={nav}>
       <Outlet />
     </AppShell>
   );
