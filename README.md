@@ -1,90 +1,122 @@
 # SLAMS — Smart Lecture Attendance Management System
 
-A modern, full-stack attendance platform for universities. Lecturers run live,
-QR-code attendance sessions; students sign in from any phone; administrators
-manage people, courses, and reports. Attendance percentages are computed
-automatically and exportable to **PDF** and **Excel**.
+An attendance platform for universities. Lecturers run live, QR-code attendance
+sessions; students sign in from any phone; administrators manage people,
+courses and reports. Attendance percentages are computed automatically and
+exportable to **PDF** and **Excel**.
 
-Built with **TanStack Start** (React, SSR, server functions) and designed to run
-on **Cloudflare Workers + D1** (zero-config, globally distributed, cheap).
+The frontend is a static single-page app on **Vercel**. Everything else runs on
+**Cloudflare**: a Worker for the API, D1 for relational data, KV for caching and
+rate limiting, and R2 for generated files.
 
 ---
 
 ## Features
 
-- **Role-based dashboards** — Admin, Lecturer, and Student experiences.
-- **Live QR / one-time code sessions** — a unique, expiring 6-digit code per lecture.
-- **QR scanning** — students scan with their camera (or type the code) on any device.
-- **GPS verification** — optional geo-fence so sign-ins only count inside the venue.
-- **Duplicate prevention** — enforced at the data layer (one record per student per session).
-- **Automatic percentages** — `attended ÷ sessions held × 100`, recomputed on demand.
-- **Analytics** — weekly attendance chart, per-student breakdowns, at-risk flags.
-- **PDF & Excel reports** — generated entirely client-side, ready to email/print.
-- **Secure auth** — PBKDF2 password hashing + signed JWT session cookies.
+- **Role-based dashboards** — Admin, Lecturer and Student experiences.
+- **Live sessions** — a unique, expiring 6-digit code per lecture, unique among
+  all live sessions, with a QR code and a live countdown.
+- **QR scanning** — students scan with their camera or type the code.
+- **Optional geo-fence** — sign-ins only count inside the venue.
+- **Duplicate prevention** — enforced by a unique index, not just UI checks.
+- **Manual override** — lecturers can mark a student present when their device
+  fails; every override is recorded in the audit log.
+- **Automatic percentages** — `attended ÷ sessions held × 100`, with a
+  configurable at-risk threshold surfaced across the app.
+- **Reports** — per-course and faculty-wide, exportable to PDF and Excel.
+- **Audit log** — every sign-in, record change and administrative action.
+- **Secure auth** — PBKDF2-SHA256 (210k iterations), revocable signed session
+  cookies, CSRF double-submit tokens, and login rate limiting with lockout.
+
+## Architecture
+
+```
+Browser ──► Vercel (static SPA, dist/)
+              │  /api/* rewrite (same-origin, first-party cookie)
+              ▼
+         Cloudflare Worker (worker/)
+              ├── D1     relational data (migrations/)
+              ├── KV     cache + rate limiting
+              └── R2     generated exports
+```
+
+Because Vercel rewrites `/api/*` to the Worker, the browser never makes a
+cross-origin request: no CORS preflight, and the session cookie is first-party
+so it survives third-party-cookie blocking.
 
 ## Tech stack
 
-| Layer     | Choice                                                             |
-| --------- | ------------------------------------------------------------------ |
-| Framework | [TanStack Start](https://tanstack.com/start) (React 19, SSR)       |
-| Routing   | TanStack Router (file-based)                                       |
-| UI        | Tailwind CSS v4 + shadcn/ui primitives + Radix                     |
-| Charts    | Recharts                                                           |
-| QR        | `qrcode` (generate) + `html5-qrcode` (scan)                        |
-| Auth      | `jose` (JWT) + Web Crypto PBKDF2                                   |
-| Reports   | `jspdf` + `jspdf-autotable` + `xlsx`                               |
-| Database  | **Cloudflare D1** (SQLite) — with in-memory fallback for local dev |
-| Hosting   | Cloudflare Workers (Nitro `cloudflare_module` preset) + Pages      |
+| Layer      | Choice                                                   |
+| ---------- | -------------------------------------------------------- |
+| UI         | React 19, TanStack Router (file-based), TanStack Query   |
+| Styling    | Tailwind CSS v4 + shadcn/ui primitives on Radix          |
+| Build      | Vite (static SPA)                                        |
+| API        | Cloudflare Workers, hand-rolled router in `worker/`      |
+| Data       | Cloudflare D1 (SQLite), KV, R2                           |
+| Auth       | `jose` (JWT) + Web Crypto PBKDF2                         |
+| Charts     | Recharts (lazy-loaded)                                   |
+| QR         | `qrcode` to generate, `html5-qrcode` to scan (both lazy) |
+| Reports    | `jspdf` + `jspdf-autotable` + `xlsx` (all lazy-loaded)   |
+| Validation | Zod schemas in `shared/`, used by client and server      |
 
-## Demo accounts
+## Local development
 
-The database auto-seeds on first run (locally or after migrations). Sign in with:
-
-| Role     | Email                | Password      |
-| -------- | -------------------- | ------------- |
-| Admin    | `admin@slams.edu`    | `password123` |
-| Lecturer | `lecturer@slams.edu` | `password123` |
-| Student  | `student@slams.edu`  | `password123` |
-
-> The admin can register additional students/lecturers, create departments &
-> courses, assign lecturers, and enroll students.
-
-## Local development (no Cloudflare account needed)
+The API and the frontend run as two processes, matching production.
 
 ```bash
 npm install
-npm run dev          # http://localhost:5173 (or next available port)
+
+# terminal 1 — API on http://127.0.0.1:8787
+npx wrangler d1 migrations apply slams --local
+node --experimental-strip-types scripts/seed.ts --demo --demo-password 'DemoPass123!' > /tmp/seed.sql
+npx wrangler d1 execute slams --local --file /tmp/seed.sql
+npm run dev:api
+
+# terminal 2 — frontend on http://localhost:3000
+npm run dev
 ```
 
-In local dev the app uses an **in-memory store** (auto-seeded), so you can explore
-every screen immediately without a D1 database. Data resets when the dev server
-restarts.
+The Vite dev server proxies `/api` to the Worker, so the app behaves exactly as
+it does on Vercel.
 
-## Deploying to Cloudflare (Workers + D1)
+Seeding is explicit and opt-in — there is no auto-seed and no in-memory
+fallback, so local behaviour matches production. Demo accounts exist only if
+you pass `--demo`, and you choose the password. Demo mode is off by default on
+the server and can be toggled under **Branding**.
 
-See **[DEPLOY.md](./DEPLOY.md)** for the full step-by-step guide. In short:
+## Deployment
 
-```bash
-npm install
-wrangler d1 create slams            # copy the database_id into wrangler.toml
-npm run db:migrate:remote           # create tables
-npm run deploy                      # build + wrangler deploy
-```
+See **[DEPLOY.md](./DEPLOY.md)** for the full Vercel + Cloudflare walkthrough.
 
 ## Project structure
 
 ```
+index.html            SPA entry (pre-paint theme, SEO/OG meta)
 src/
-  components/        UI primitives, AppShell, ThemeToggle, Avatar, AnimatedNumber, …
+  main.tsx            Client bootstrap: QueryClient, router, AuthProvider
   lib/
-    api.functions.ts Server functions (auth, CRUD, sessions, reports)
-    db.server.ts     D1-backed repository (+ in-memory fallback), schema lives in migrations/
-    auth.server.ts   Password hashing + JWT session helpers
-    exporters.ts     PDF / Excel report generation
-  routes/            File-based routes: /, /login, /admin/*, /lecturer/*, /student/*
-  styles.css         Design system (Tailwind v4 + custom tokens & animations)
-migrations/0001_init.sql   D1 schema
-wrangler.toml              Cloudflare Worker + D1 binding config
+    api.ts            Typed API client, ApiClientError, CSRF handling
+    auth.tsx          Auth context; resolves the session before first render
+    exporters.ts      PDF/Excel generation (dynamically imported)
+  components/         AppShell, DataTable, QueryBoundary, ConfirmDialog, ui/*
+  routes/             File-based: /, /login, /admin/*, /lecturer/*, /student/*
+worker/
+  index.ts            Router, error handling, structured logging, cron
+  lib/                errors, crypto, context, http, audit, repo
+  routes/             auth, admin, teaching, public
+shared/schemas.ts     Zod schemas and types shared by client and server
+migrations/           D1 schema
+scripts/seed.ts       Emits seed SQL for review before it runs
+wrangler.toml         Worker, D1, KV and R2 bindings
+vercel.json           /api rewrite, SPA fallback, security headers
+```
+
+## Checks
+
+```bash
+npm run typecheck   # frontend + worker
+npm run lint
+npm run build
 ```
 
 ## License

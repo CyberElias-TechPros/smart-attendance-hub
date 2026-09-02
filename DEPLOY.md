@@ -1,106 +1,176 @@
-# Deploying SLAMS to Cloudflare (Workers + D1)
+# Deploying SLAMS
 
-SLAMS is built with TanStack Start and compiled by Nitro to a **Cloudflare
-Workers** module. State lives in **D1** (serverless SQLite). Everything is
-configured in `wrangler.toml` and `vite.config.ts` — you do not need to touch
-the build internals.
+SLAMS is split across two providers:
+
+| Piece        | Runs on                | Source        | Output                |
+| ------------ | ---------------------- | ------------- | --------------------- |
+| Web frontend | **Vercel** (static)    | `src/`        | `dist/`               |
+| API          | **Cloudflare Workers** | `worker/`     | Worker script         |
+| Database     | **Cloudflare D1**      | `migrations/` | SQLite at the edge    |
+| Cache        | **Cloudflare KV**      | —             | `CACHE`, `RATE_LIMIT` |
+| File exports | **Cloudflare R2**      | —             | `EXPORTS` bucket      |
+
+The browser only ever talks to its own origin. `vercel.json` rewrites
+`/api/*` to the Worker, so the session cookie is first-party and no
+third-party-cookie blocking or CORS preflight is involved.
 
 ## Prerequisites
 
 - A [Cloudflare](https://cloudflare.com) account (free tier is enough).
-- [Node.js 20+](https://nodejs.org) and npm.
-- Wrangler (installed as a dev dependency; run via `npm run`).
+- A [Vercel](https://vercel.com) account.
+- Node.js 20+ and npm.
 
 ```bash
 npm install
-npx wrangler login        # authenticate the CLI once
+npx wrangler login
 ```
 
-## 1. Create the D1 database
+---
+
+## 1. Provision Cloudflare resources
+
+Run each command and copy the id it prints into `wrangler.toml`.
 
 ```bash
-npm run db:create         # -> wrangler d1 create slams
+# D1 database
+npx wrangler d1 create slams                    # → database_id
+
+# KV namespaces
+npx wrangler kv namespace create CACHE          # → id
+npx wrangler kv namespace create RATE_LIMIT     # → id
+
+# R2 bucket for generated exports
+npx wrangler r2 bucket create slams-exports
 ```
 
-Wrangler prints a `database_id`. Open `wrangler.toml` and replace:
+`wrangler.toml` ships with placeholder ids for the `staging` and `production`
+environments. Replace every `REPLACE_WITH_*` value before deploying.
+
+## 2. Apply database migrations
+
+```bash
+npx wrangler d1 migrations apply slams --remote
+```
+
+## 3. Set the session secret
+
+The Worker refuses to start without a strong `SESSION_SECRET` — it signs
+session JWTs, so a weak value means forgeable logins.
+
+```bash
+openssl rand -base64 48 | npx wrangler secret put SESSION_SECRET
+```
+
+Repeat with `--env production` for each environment you deploy.
+
+## 4. Configure allowed origins
+
+In `wrangler.toml`, set `ALLOWED_ORIGINS` for each environment to the exact
+origins that may call the API — your Vercel production domain and any preview
+domains you want to work:
 
 ```toml
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+[env.production.vars]
+ENVIRONMENT = "production"
+ALLOWED_ORIGINS = "https://slams.example.edu"
 ```
 
-with that value.
-
-## 2. Apply the schema
-
-Create the tables in **production** D1:
+## 5. Deploy the Worker
 
 ```bash
-npm run db:migrate:remote
+npx wrangler deploy --env production
 ```
 
-> For a fully local test instead, use `npm run db:migrate:local` (needs
-> `wrangler dev` / Miniflare). The app will also auto-seed demo data on first
-> request.
-
-## 3. Build & deploy
+Note the URL it prints, e.g. `https://slams-api.your-team.workers.dev`.
+Verify it:
 
 ```bash
-npm run deploy           # vite build  ->  wrangler deploy
+curl https://slams-api.your-team.workers.dev/api/health
+# {"status":"ok","environment":"production","database":"ok",...}
 ```
 
-Nitro writes the Worker to `.output` and generates `.output/server/wrangler.json`
-(merging your D1 binding). Wrangler then publishes it. After a moment your app
-is live at `https://slams.<your-subdomain>.workers.dev`.
+## 6. Point the frontend at the Worker
 
-### Local preview against real D1
+Edit `vercel.json` and replace the placeholder destination with the URL from
+the previous step:
+
+```json
+{ "source": "/api/:path*", "destination": "https://slams-api.your-team.workers.dev/api/:path*" }
+```
+
+## 7. Deploy the frontend to Vercel
+
+Import the repository at [vercel.com/new](https://vercel.com/new). Vercel reads
+`vercel.json`, so the defaults are already correct:
+
+- **Framework preset:** Other
+- **Build command:** `npm run build`
+- **Output directory:** `dist`
+- **Install command:** `npm ci`
+
+No environment variables are required. `VITE_API_BASE_URL` exists only as an
+escape hatch for pointing a local build at a deployed Worker; in normal
+operation leave it unset so the relative `/api` rewrite is used.
+
+Deploy, then open the site and confirm the landing page renders and
+`/api/health` responds through your own domain.
+
+## 8. Create the first administrator
+
+`scripts/seed.ts` emits SQL rather than writing to the database directly, so
+you can review it before it runs.
 
 ```bash
-npm run db:migrate:local
-npm run cf:dev           # wrangler dev (serves the built worker + D1 locally)
+node --experimental-strip-types scripts/seed.ts > /tmp/seed.sql
+npx wrangler d1 execute slams --remote --file /tmp/seed.sql
 ```
 
-## 4. Seed data
+Without `--demo` this creates only the site settings row and a single
+administrator, and prints the generated password once. Sign in and change it
+immediately.
 
-On the first request after deploy, the repository auto-seeds departments,
-demo users, courses, and a few historical sessions. Sign in with the demo
-accounts from the README. To start fresh later, clear the tables with:
+To load the full demo dataset instead (never do this in production):
 
 ```bash
-npx wrangler d1 execute slams --remote --command "DELETE FROM attendance_records; DELETE FROM sessions; DELETE FROM course_enrollments; DELETE FROM courses; DELETE FROM users; DELETE FROM departments;"
+node --experimental-strip-types scripts/seed.ts --demo --demo-password 'ChooseAStrongOne1' > /tmp/seed.sql
 ```
 
-(Or run `npx wrangler d1 execute slams --remote --command "DROP TABLE ..."` per
-table and re-apply migrations.)
+## 9. Turn demo mode off
 
-## Environment & secrets
+Sign in as an administrator, go to **Branding**, and make sure _Show demo
+accounts_ is off. The server default is already off; this only matters if you
+seeded with `--demo`.
 
-- There are **no required secrets** for a basic deploy — the JWT signing secret
-  defaults to a dev value inside `src/lib/auth.server.ts`. For production,
-  override it with a Workers secret:
+---
 
-  ```bash
-  npx wrangler secret put SLAMS_JWT_SECRET   # paste a long random string
-  ```
+## Local development
 
-  Then update `getSecret()` in `src/lib/auth.server.ts` to prefer
-  `process.env.SLAMS_JWT_SECRET`.
+Two processes, matching the production split:
 
-- Sessions use an `HttpOnly`, `SameSite=Lax` cookie — no extra config needed.
+```bash
+# terminal 1 — the API
+npx wrangler d1 migrations apply slams --local
+node --experimental-strip-types scripts/seed.ts --demo --demo-password 'DemoPass123!' > /tmp/seed.sql
+npx wrangler d1 execute slams --local --file /tmp/seed.sql
+npm run dev:api          # http://127.0.0.1:8787
 
-## How the data layer works
+# terminal 2 — the frontend
+npm run dev              # http://localhost:3000, proxies /api to :8787
+```
 
-`src/lib/db.server.ts` exports `getRepo()`, which returns a **D1-backed**
-repository when the `DB` binding is present (production / `wrangler dev`), and
-falls back to an **in-memory** store when it isn't (plain `vite dev`). All server
-functions in `src/lib/api.functions.ts` go through this repository, so the rest
-of the app is storage-agnostic. D1 is reached via the canonical
-`import { env } from "cloudflare:workers"` Worker env.
+If `wrangler dev` reports "Using redirected Wrangler configuration", delete a
+stale build first: `rm -rf .output .wrangler/deploy`.
 
-## Troubleshooting
+## Scheduled maintenance
 
-- **`database_id` errors** — make sure you replaced the placeholder in
-  `wrangler.toml` and re-ran `npm run db:migrate:remote`.
-- **Migrations out of sync** — re-run `npm run db:migrate:remote`; Nitro tracks
-  applied migrations in a `_migrations` table on the D1 instance.
-- **404 on a route** — ensure you deployed the full build (`npm run deploy`)
-  rather than only `vite build`; the Worker entry is `.output/server/index.mjs`.
+`wrangler.toml` registers a cron trigger that closes expired sessions and
+prunes audit entries older than 180 days. It is enabled automatically on
+deploy; no extra setup is needed.
+
+## Checks before going live
+
+```bash
+npm run typecheck   # frontend + worker
+npm run lint
+npm run build
+```
