@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { toast } from "sonner";
 import { burstCelebrate } from "@/lib/confetti";
+import { shortDeviceId } from "@/lib/device";
 
 export const Route = createFileRoute("/lecturer/sessions/$sessionId")({
   component: LiveSessionPage,
@@ -139,6 +140,12 @@ function LiveSessionPage() {
               <canvas ref={canvasRef} className="rounded-2xl bg-white p-3" />
             </div>
           </div>
+          <CodeRotationStatus
+            codeExpiresAt={detailQ.data.codeExpiresAt}
+            intervalSeconds={s.codeIntervalSeconds}
+            isOpen={!!isOpen}
+            now={now}
+          />
           <div className="mt-6 grid grid-cols-2 gap-3">
             <div className="rounded-xl bg-muted/60 p-3 text-center">
               <div className="text-xs text-muted-foreground">One-time code</div>
@@ -181,6 +188,10 @@ function LiveSessionPage() {
                   <TableHead>#</TableHead>
                   <TableHead>Student</TableHead>
                   <TableHead>Matric</TableHead>
+                  <TableHead className="text-right" title="Distance from the venue at sign-in">
+                    Dist
+                  </TableHead>
+                  <TableHead title="Device used to sign in">Device</TableHead>
                   <TableHead className="text-right">Time</TableHead>
                   <TableHead className="w-10" />
                 </TableRow>
@@ -193,6 +204,15 @@ function LiveSessionPage() {
                     </TableCell>
                     <TableCell className="font-medium">{a.name}</TableCell>
                     <TableCell className="font-mono text-xs">{a.matricNo}</TableCell>
+                    <TableCell className="text-right font-mono text-xs text-muted-foreground">
+                      {a.distanceMeters != null ? `${a.distanceMeters}m` : "—"}
+                    </TableCell>
+                    <TableCell
+                      className="font-mono text-xs text-muted-foreground"
+                      title={a.deviceId ?? "Recorded before device tracking"}
+                    >
+                      {shortDeviceId(a.deviceId)}
+                    </TableCell>
                     <TableCell className="text-right font-mono text-xs">
                       {new Date(a.timestamp).toLocaleTimeString()}
                     </TableCell>
@@ -211,7 +231,7 @@ function LiveSessionPage() {
                 ))}
                 {attendance.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
+                    <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
                       Waiting for the first sign-in…
                     </TableCell>
                   </TableRow>
@@ -222,5 +242,51 @@ function LiveSessionPage() {
         </div>
       </div>
     </>
+  );
+}
+
+function CodeRotationStatus({
+  codeExpiresAt,
+  intervalSeconds,
+  isOpen,
+  now,
+}: {
+  codeExpiresAt?: number;
+  intervalSeconds?: number;
+  isOpen: boolean;
+  now: number;
+}) {
+  if (!isOpen || !codeExpiresAt || !intervalSeconds) {
+    return (
+      <div className="mt-4 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+        <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
+        {isOpen ? "Static code for this session" : "Code frozen — session closed"}
+      </div>
+    );
+  }
+  const total = intervalSeconds * 1000;
+  const left = Math.max(0, codeExpiresAt - now);
+  const frac = Math.min(1, left / total);
+  const secs = Math.ceil(left / 1000);
+  return (
+    <div className="mt-4">
+      <div className="flex items-center justify-center gap-1.5 text-xs font-medium text-primary">
+        <span className="h-1.5 w-1.5 animate-blink rounded-full bg-primary" />
+        New code in {Math.floor(secs / 60)}:{String(secs % 60).padStart(2, "0")}
+      </div>
+      <div
+        className="mt-2 h-1 overflow-hidden rounded-full bg-muted"
+        role="progressbar"
+        aria-label="Time until the code rotates"
+        aria-valuenow={Math.round(frac * 100)}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      >
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-[width] duration-1000 ease-linear"
+          style={{ width: `${frac * 100}%` }}
+        />
+      </div>
+    </div>
   );
 }

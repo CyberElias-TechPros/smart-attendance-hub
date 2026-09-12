@@ -50,6 +50,12 @@ export interface AttendanceSession {
   longitude?: number;
   radiusMeters?: number;
   topic?: string;
+  /** When set, the code rotates every N seconds (anti-sharing). */
+  codeIntervalSeconds?: number;
+  /** When the current code was issued (rotation bookkeeping). */
+  codeUpdatedAt?: number;
+  /** Previous code, accepted briefly after rotation (grace window). Never exposed to students. */
+  prevCode?: string;
 }
 
 export interface AttendanceRecord {
@@ -106,12 +112,16 @@ export interface SessionDetail {
   session: AttendanceSession;
   course: Course;
   totalEnrolled: number;
+  /** When the currently displayed code rotates (only for rotating sessions). */
+  codeExpiresAt?: number;
   attendance: Array<{
     id: string;
     studentId: string;
     name: string;
     matricNo: string;
     timestamp: number;
+    deviceId?: string;
+    distanceMeters?: number;
   }>;
 }
 
@@ -138,6 +148,8 @@ export interface CourseReportStudent {
   matricNo: string;
   attended: number;
   percentage: number;
+  /** Distinct devices used to sign in (>1 is worth a look). */
+  devices: number;
 }
 
 export interface CourseReport {
@@ -164,6 +176,8 @@ export interface FacultyReportStudent {
   attended: number;
   total: number;
   percentage: number;
+  /** Distinct devices used to sign in (>1 is worth a look). */
+  devices: number;
 }
 
 export interface FacultyReport {
@@ -196,6 +210,6 @@ export interface OpenSession {
   courseId: string;
   courseCode: string;
   courseTitle: string;
-  code: string;
+  /** Sign-in code is intentionally absent — see listOpenSessionsForStudent. */
   expiresAt: number;
 }

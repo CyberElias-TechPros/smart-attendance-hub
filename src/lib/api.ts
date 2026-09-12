@@ -107,21 +107,24 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     onUnauthorized?.();
   }
 
-  let payload: ErrorBody | null = null;
+  // NOTE: the body can only be consumed once — parse it a single time and
+  // reuse the parsed payload for both the error and success paths.
+  let payload: unknown = null;
   try {
-    payload = (await res.json()) as ErrorBody | null;
+    payload = (await res.json()) as unknown;
   } catch {
     payload = null;
   }
 
   if (!res.ok) {
+    const err = (payload as ErrorBody | null)?.error;
     throw new ApiError(
       res.status,
-      payload?.error?.code ?? "error",
-      payload?.error?.message ?? `Request failed (${res.status})`,
+      err?.code ?? "error",
+      err?.message ?? `Request failed (${res.status})`,
     );
   }
-  return (await res.json()) as T;
+  return payload as T;
 }
 
 const qs = (params: Record<string, string | undefined>) => {
@@ -240,6 +243,7 @@ export const sessions = {
     latitude?: number;
     longitude?: number;
     radiusMeters?: number;
+    codeIntervalSeconds?: number | null;
   }) => request<AttendanceSession>("/api/sessions", { method: "POST", body: input }),
   detail: (sessionId: string) =>
     request<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}`),
@@ -261,7 +265,12 @@ export const student = {
     request<StudentCourseSession[]>(`/api/me/courses/${encodeURIComponent(courseId)}/sessions`),
   history: () => request<StudentHistoryItem[]>("/api/me/history"),
   openSessions: () => request<OpenSession[]>("/api/me/open-sessions"),
-  submitAttendance: (input: { code: string; latitude?: number; longitude?: number }) =>
+  submitAttendance: (input: {
+    code: string;
+    latitude?: number;
+    longitude?: number;
+    deviceId?: string;
+  }) =>
     request<{ course: { code: string; title: string }; timestamp: number }>("/api/attendance", {
       method: "POST",
       body: input,

@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { ThemeToggle } from "./ThemeToggle";
 import { Avatar } from "./Avatar";
 import { AnimatedNumber } from "./AnimatedNumber";
+import { CommandPalette, PaletteTrigger } from "./CommandPalette";
 
 export interface NavItem {
   to: string;
@@ -26,6 +27,7 @@ export function AppShell({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const router = useRouter();
   const navigate = useNavigate();
@@ -55,6 +57,7 @@ export function AppShell({
           <span className="font-display text-base font-semibold">SLAMS</span>
         </Link>
         <div className="flex items-center gap-2">
+          <PaletteTrigger compact onClick={() => setPaletteOpen(true)} />
           <ThemeToggle />
           <button
             onClick={() => setOpen((v) => !v)}
@@ -84,6 +87,9 @@ export function AppShell({
                 {role}
               </div>
             </div>
+          </div>
+          <div className="px-3 pt-3">
+            <PaletteTrigger onClick={() => setPaletteOpen(true)} />
           </div>
           <nav className="flex-1 space-y-1 overflow-y-auto p-3">
             {nav.map((n) => {
@@ -129,6 +135,12 @@ export function AppShell({
           <div className="mx-auto max-w-7xl px-4 py-6 sm:px-8 sm:py-8">{children}</div>
         </main>
       </div>
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        nav={nav}
+        onLogout={() => void handleLogout()}
+      />
     </div>
   );
 }

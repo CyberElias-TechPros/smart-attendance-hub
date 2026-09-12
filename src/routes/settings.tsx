@@ -15,6 +15,9 @@ import { KeyRound, UserCog, Mail, GraduationCap, Save } from "lucide-react";
 import { RouteTransition } from "@/components/RouteTransition";
 
 export const Route = createFileRoute("/settings")({
+  head: () => ({
+    meta: [{ name: "robots", content: "noindex, nofollow" }, { title: "Settings — SLAMS" }],
+  }),
   beforeLoad: async ({ context }) => {
     const user = await loadCurrentUser(context);
     if (!user) throw redirect({ to: "/login" });

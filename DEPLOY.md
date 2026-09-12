@@ -129,47 +129,11 @@ npm run dev        # SPA on :5173 calling the production Worker
 
 ---
 
-## CI (optional)
+## CI
 
-A ready-made GitHub Actions workflow runs lint + typecheck + tests + build on
-every push/PR:
-
-```yaml
-# .github/workflows/ci.yml
-name: CI
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-
-jobs:
-  quality:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - name: Install dependencies
-        run: npm ci
-      - name: Lint
-        run: npm run lint
-      - name: Typecheck
-        run: npm run typecheck
-      - name: Test (worker API + repo integration)
-        run: npm test
-      - name: Build (frontend)
-        run: npm run build
-```
-
-> Note: this file is not committed in the current branch because the GitHub
-> App used to push it lacks the `workflows` permission. Create
-> `.github/workflows/ci.yml` with the content above once that permission is
-> available (or simply add the file in the GitHub web UI).
+`.github/workflows/ci.yml` runs lint + typecheck + tests + build on every
+push to `main` and every pull request, so broken changes are caught before
+they reach production.
 
 ## Operations cheat-sheet
 

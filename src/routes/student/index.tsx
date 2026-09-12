@@ -111,10 +111,14 @@ function StudentDashboard() {
                 <div className="truncate font-display font-semibold">{s.courseTitle}</div>
               </div>
               <div className="text-right">
-                <div className="font-mono text-lg font-semibold tracking-widest">{s.code}</div>
-                <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <Clock className="h-3 w-3" /> <Countdown expiresAt={s.expiresAt} />
+                <div className="inline-flex items-center gap-1.5 rounded-full bg-success/15 px-2.5 py-1 text-xs font-semibold text-success">
+                  <span className="h-1.5 w-1.5 animate-blink rounded-full bg-success" />
+                  LIVE
                 </div>
+                <div className="mt-1.5 flex items-center justify-end gap-1 text-xs text-muted-foreground">
+                  <Clock className="h-3 w-3" /> <Countdown expiresAt={s.expiresAt} /> left
+                </div>
+                <div className="mt-0.5 text-xs font-medium text-primary">Tap to sign in →</div>
               </div>
             </Link>
           ))}

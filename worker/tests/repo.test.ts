@@ -109,6 +109,83 @@ describe("repo (integration, real SQLite via D1 shim)", () => {
       const admin = await repo.getUserByEmail(DEMO.admin);
       await expect(repo.deleteUser(admin!.id)).rejects.toThrow("last administrator");
     });
+
+    it("deleting a lecturer cascades their sessions' attendance records", async () => {
+      const lecId = await repo.createUser({
+        name: "Temp Lecturer",
+        email: "temp-lec@slams.edu",
+        password: "temp-pass-1",
+        role: "lecturer",
+        staffId: "STF-TMP",
+      });
+      const depts = await repo.listDepartments();
+      const c = await repo.createCourse({
+        code: "TMP 101",
+        title: "Temporary Course",
+        departmentId: depts[0].id,
+        level: "100",
+        units: 1,
+      });
+      await repo.assignLecturer(c.id, lecId);
+      const ada = await repo.getUserByEmail(DEMO.student);
+      await repo.setEnrollments(c.id, [ada!.id]);
+      const s = await repo.startSession({
+        courseId: c.id,
+        lecturerId: lecId,
+        durationMinutes: 15,
+      });
+      await repo.submitAttendance({ code: s.code, studentId: ada!.id });
+
+      await repo.deleteUser(lecId);
+
+      const rec = shim.raw
+        .prepare("SELECT COUNT(*) AS c FROM attendance_records WHERE course_id = ?")
+        .get(c.id) as { c: number };
+      expect(rec.c).toBe(0);
+      const sess = shim.raw
+        .prepare("SELECT COUNT(*) AS c FROM sessions WHERE course_id = ?")
+        .get(c.id) as { c: number };
+      expect(sess.c).toBe(0);
+      // Percentages stay sane (no orphan records ÷ zero sessions).
+      const report = await repo.courseReport(c.id);
+      expect(report!.totalSessions).toBe(0);
+      expect(report!.students[0].attended).toBe(0);
+      await repo.deleteCourse(c.id);
+    });
+
+    it("partial user updates preserve existing fields", async () => {
+      const ada = await repo.getUserByEmail(DEMO.student);
+      await repo.updateStudent(ada!.id, { name: "Ada Obi (edited)", email: DEMO.student });
+      const after = await repo.getUser(ada!.id);
+      expect(after!.name).toBe("Ada Obi (edited)");
+      expect(after!.matricNo).toBe(ada!.matricNo);
+      expect(after!.departmentId).toBe(ada!.departmentId);
+      expect(after!.level).toBe(ada!.level);
+
+      // An explicit "" department means "unassigned" → NULL.
+      await repo.updateStudent(ada!.id, {
+        name: ada!.name,
+        email: ada!.email,
+        departmentId: "",
+      });
+      expect((await repo.getUser(ada!.id))!.departmentId).toBeUndefined();
+
+      // Restore the demo row for the remaining suites.
+      await repo.updateStudent(ada!.id, {
+        name: ada!.name,
+        email: ada!.email,
+        matricNo: ada!.matricNo,
+        departmentId: ada!.departmentId,
+        level: ada!.level,
+      });
+
+      const lec = await repo.getUserByEmail(DEMO.lecturer);
+      await repo.updateLecturer(lec!.id, { name: "Dr. A. Yusuf (edited)", email: DEMO.lecturer });
+      const lecAfter = await repo.getUser(lec!.id);
+      expect(lecAfter!.staffId).toBe(lec!.staffId);
+      expect(lecAfter!.departmentId).toBe(lec!.departmentId);
+      await repo.updateLecturer(lec!.id, { name: lec!.name, email: lec!.email });
+    });
   });
 
   describe("departments", () => {
@@ -280,6 +357,118 @@ describe("repo (integration, real SQLite via D1 shim)", () => {
 
       await repo.endSession(s1.id);
       await repo.endSession(s2.id);
+    });
+
+    it("rotating codes advance with a grace window, and record device + distance", async () => {
+      const c = await repo.getCourseByCode("CSC 311");
+      const lec = (await repo.listUsers("lecturer")).find((l) => l.email === DEMO.lecturer)!;
+      const ada = await repo.getUserByEmail(DEMO.student);
+      const bello = await repo.getUserByEmail("bello@slams.edu");
+      const eze = await repo.getUserByEmail("eze@slams.edu");
+
+      const s = await repo.startSession({
+        courseId: c!.id,
+        lecturerId: lec.id,
+        durationMinutes: 15,
+        latitude: 6.5,
+        longitude: 3.4,
+        radiusMeters: 500,
+        codeIntervalSeconds: 60,
+      });
+      expect(s.codeIntervalSeconds).toBe(60);
+      const c1 = s.code;
+
+      // Force the slot to elapse, then rotate (as a lecturer poll would).
+      shim.raw
+        .prepare("UPDATE sessions SET code_updated_at = ? WHERE id = ?")
+        .run(Date.now() - 61_000, s.id);
+      const rotated = await repo.rotateSessionCodeIfNeeded(s.id);
+      expect(rotated!.code).not.toBe(c1);
+      expect(rotated!.prevCode).toBe(c1);
+      const c2 = rotated!.code;
+
+      // Previous code still works inside the grace window…
+      const r1 = await repo.submitAttendance({
+        code: c1,
+        studentId: ada!.id,
+        latitude: 6.5005,
+        longitude: 3.4005,
+        deviceId: "ada-phone-1",
+      });
+      expect(r1.course.code).toBe("CSC 311");
+
+      // …and the forensics landed on the record.
+      const rec = shim.raw
+        .prepare(
+          "SELECT device_id, distance_meters FROM attendance_records WHERE session_id = ? AND student_id = ?",
+        )
+        .get(s.id, ada!.id) as { device_id: string; distance_meters: number };
+      expect(rec.device_id).toBe("ada-phone-1");
+      expect(rec.distance_meters).toBeGreaterThanOrEqual(0);
+      expect(rec.distance_meters).toBeLessThan(500);
+
+      // Current code works too.
+      await repo.submitAttendance({
+        code: c2,
+        studentId: bello!.id,
+        latitude: 6.5,
+        longitude: 3.4,
+        deviceId: "bello-phone-9",
+      });
+
+      // Detail view exposes the rotation countdown + per-row forensics.
+      const detail = await repo.sessionDetail(s.id);
+      expect(detail!.codeExpiresAt).toBeGreaterThan(Date.now());
+      const adaRow = detail!.attendance.find((a) => a.studentId === ada!.id)!;
+      expect(adaRow.deviceId).toBe("ada-phone-1");
+      expect(adaRow.distanceMeters).toBe(rec.distance_meters);
+
+      // After a second rotation the first code is fully retired…
+      shim.raw
+        .prepare("UPDATE sessions SET code_updated_at = ? WHERE id = ?")
+        .run(Date.now() - 61_000, s.id);
+      await expect(
+        repo.submitAttendance({ code: c1, studentId: eze!.id, latitude: 6.5, longitude: 3.4 }),
+      ).rejects.toThrow("Invalid or expired");
+      // …while the then-current code is honored through its own grace.
+      await repo.submitAttendance({ code: c2, studentId: eze!.id, latitude: 6.5, longitude: 3.4 });
+
+      // A stale previous code between rotations gets the retryable message.
+      const slow = await repo.startSession({
+        courseId: c!.id,
+        lecturerId: lec.id,
+        durationMinutes: 15,
+        codeIntervalSeconds: 600,
+      });
+      const slowC1 = slow.code;
+      shim.raw
+        .prepare("UPDATE sessions SET code_updated_at = ? WHERE id = ?")
+        .run(Date.now() - 601_000, slow.id);
+      await repo.rotateSessionCodeIfNeeded(slow.id);
+      shim.raw
+        .prepare("UPDATE sessions SET code_updated_at = ? WHERE id = ?")
+        .run(Date.now() - 61_000, slow.id); // past grace, before next rotation
+      await expect(repo.submitAttendance({ code: slowC1, studentId: ada!.id })).rejects.toThrow(
+        "just expired",
+      );
+
+      // Static sessions never rotate and expose no countdown.
+      const sStatic = await repo.startSession({
+        courseId: c!.id,
+        lecturerId: lec.id,
+        durationMinutes: 15,
+      });
+      expect((await repo.rotateSessionCodeIfNeeded(sStatic.id))!.code).toBe(sStatic.code);
+      expect((await repo.sessionDetail(sStatic.id))!.codeExpiresAt).toBeUndefined();
+
+      // Device counts surface in the report.
+      const report = await repo.courseReport(c!.id);
+      const adaReport = report!.students.find((x) => x.id === ada!.id)!;
+      expect(adaReport.devices).toBeGreaterThanOrEqual(1);
+
+      await repo.endSession(s.id);
+      await repo.endSession(slow.id);
+      await repo.endSession(sStatic.id);
     });
   });
 

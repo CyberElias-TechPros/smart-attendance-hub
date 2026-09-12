@@ -174,14 +174,29 @@ const courseSchema = z.object({
 });
 const courseUpdateSchema = courseSchema.extend({ id: idSchema });
 
-const startSessionSchema = z.object({
-  courseId: idSchema,
-  durationMinutes: z.number().int().min(1).max(240).default(15),
-  topic: optionalShortStr(160),
-  latitude: latSchema.optional(),
-  longitude: lngSchema.optional(),
-  radiusMeters: z.number().int().min(10).max(5000).optional(),
-});
+const startSessionSchema = z
+  .object({
+    courseId: idSchema,
+    durationMinutes: z.number().int().min(1).max(240).default(15),
+    topic: optionalShortStr(160),
+    latitude: latSchema.optional(),
+    longitude: lngSchema.optional(),
+    radiusMeters: z.number().int().min(10).max(5000).optional(),
+    // Anti-sharing: when set, the code rotates every N seconds (with a grace
+    // window for students mid-sign-in). Null/omitted = one static code.
+    codeIntervalSeconds: z.number().int().min(30).max(600).nullish(),
+  })
+  // A geofence is only enforced when ALL of lat/lng/radius are present —
+  // reject partial coordinates instead of silently running an open session.
+  .refine(
+    (v) => {
+      const n = [v.latitude, v.longitude, v.radiusMeters].filter((x) => x !== undefined).length;
+      return n === 0 || n === 3;
+    },
+    {
+      message: "Geofence requires latitude, longitude and radiusMeters together (or none)",
+    },
+  );
 
 const attendanceSchema = z.object({
   code: z
@@ -191,6 +206,9 @@ const attendanceSchema = z.object({
     .refine((s) => s.length === 6, { message: "Attendance code must be exactly 6 digits" }),
   latitude: latSchema.optional(),
   longitude: lngSchema.optional(),
+  // Opaque per-device token (generated client-side, persisted). Sanitized,
+  // never trusted, in the repo layer — see sanitizeDeviceId.
+  deviceId: z.string().trim().max(64).optional().or(z.literal("")),
 });
 
 const testimonialSchema = z.object({
@@ -299,9 +317,10 @@ const routes: Route[] = [
     pattern: /^\/api\/auth\/login$/,
     handler: async (req, _p, base) => {
       const data = await bodyOf(req, loginSchema);
-      if (
-        !limiter.hit(`login:${base.ip}`, DEFAULT_LIMITS.login.limit, DEFAULT_LIMITS.login.windowMs)
-      ) {
+      // Count only FAILED attempts: campuses sit behind NAT, so counting
+      // every attempt would lock out legitimate users sharing one IP, while
+      // brute-force guessing (which always fails) is still throttled.
+      if (!limiter.peek(`login:${base.ip}`, DEFAULT_LIMITS.login.limit)) {
         throw new ApiError(
           429,
           "rate_limited",
@@ -310,7 +329,10 @@ const routes: Route[] = [
       }
       const repo = await getRepo(base.env.DB);
       const user = await repo.verifyCredentials(data.email, data.password);
-      if (!user) throw new ApiError(401, "invalid_credentials", "Invalid email or password");
+      if (!user) {
+        limiter.hit(`login:${base.ip}`, DEFAULT_LIMITS.login.limit, DEFAULT_LIMITS.login.windowMs);
+        throw new ApiError(401, "invalid_credentials", "Invalid email or password");
+      }
       const token = await signSession({ sub: user.id, role: user.role, name: user.name }, base.env);
       console.log(
         JSON.stringify({ msg: "login", reqId: base.reqId, userId: user.id, ip: base.ip }),
@@ -602,6 +624,7 @@ const routes: Route[] = [
       const session = await ctx.repo.startSession({
         ...data,
         durationMinutes: data.durationMinutes ?? 15,
+        codeIntervalSeconds: data.codeIntervalSeconds ?? undefined,
         lecturerId: ctx.user.id,
       });
       return jsonOk(session, { status: 201 });
