@@ -1,7 +1,16 @@
-import { createFileRoute, redirect, Outlet } from "@tanstack/react-router";
-import { me } from "@/lib/api.functions";
+import { createFileRoute, Outlet } from "@tanstack/react-router";
+import { requireRole } from "@/lib/queries";
 import { AppShell, type NavItem } from "@/components/AppShell";
-import { LayoutDashboard, GraduationCap, Users, Building2, BookOpen, FileBarChart, Settings, Settings2 } from "lucide-react";
+import {
+  LayoutDashboard,
+  GraduationCap,
+  Users,
+  Building2,
+  BookOpen,
+  FileBarChart,
+  Settings,
+  Settings2,
+} from "lucide-react";
 
 const nav: NavItem[] = [
   { to: "/admin", label: "Overview", icon: LayoutDashboard },
@@ -15,10 +24,8 @@ const nav: NavItem[] = [
 ];
 
 export const Route = createFileRoute("/admin")({
-  beforeLoad: async () => {
-    const user = await me();
-    if (!user) throw redirect({ to: "/login" });
-    if (user.role !== "admin") throw redirect({ to: user.role === "lecturer" ? "/lecturer" : "/student" });
+  beforeLoad: async ({ context }) => {
+    const user = await requireRole(context, "admin");
     return { user };
   },
   component: AdminLayout,
@@ -32,4 +39,3 @@ function AdminLayout() {
     </AppShell>
   );
 }
-

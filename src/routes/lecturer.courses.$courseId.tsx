@@ -1,53 +1,55 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useSuspenseQuery, useQuery, useQueryClient, queryOptions } from "@tanstack/react-query";
-import { useServerFn } from "@tanstack/react-start";
-import {
-  lecturerCourses, courseReport, lecturerSessionsFor,
-  startSession, endSession,
-} from "@/lib/api.functions";
+import { courses, sessions } from "@/lib/api";
+import { courseReportQO, lecturerCoursesQO } from "@/lib/queries";
 import { PageHeader } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { PlayCircle, MapPin, ChevronRight, ArrowLeft } from "lucide-react";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { PlayCircle, MapPin, ChevronRight, ArrowLeft, AlertTriangle } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { exportPDF, exportExcel } from "@/lib/exporters";
 import { FileDown, FileSpreadsheet } from "lucide-react";
 import { CourseGlyph } from "@/lib/courseIcons";
-import { useAtRiskThreshold } from "@/lib/useSiteSettings";
+import { useAtRiskThreshold, useSiteSettings } from "@/lib/useSiteSettings";
 import { burstCelebrate } from "@/lib/confetti";
 
-const coursesQO = queryOptions({ queryKey: ["lecturer", "courses"], queryFn: () => lecturerCourses() });
-
 export const Route = createFileRoute("/lecturer/courses/$courseId")({
-  loader: ({ context }) => context.queryClient.ensureQueryData(coursesQO),
+  beforeLoad: async ({ context }) => {
+    await context.queryClient.ensureQueryData(lecturerCoursesQO);
+  },
   component: CourseDetailPage,
 });
 
+const courseSessionsQO = (courseId: string) =>
+  queryOptions({
+    queryKey: ["lecturer-sessions", courseId],
+    queryFn: () => courses.sessions(courseId),
+    enabled: Boolean(courseId),
+  });
+
 function CourseDetailPage() {
   const { courseId } = Route.useParams();
-  const { data: courses } = useSuspenseQuery(coursesQO);
+  const { data: courses } = useSuspenseQuery(lecturerCoursesQO);
   const course = courses.find((c) => c.id === courseId);
   const qc = useQueryClient();
   const navigate = useNavigate();
   const threshold = useAtRiskThreshold();
-  const startFn = useServerFn(startSession);
-  const endFn = useServerFn(endSession);
+  const { data: settings } = useSiteSettings();
 
-  const reportQ = useQuery({
-    queryKey: ["report", courseId],
-    queryFn: () => courseReport({ data: { courseId } }),
-    enabled: Boolean(courseId),
-  });
-  const sessionsQ = useQuery({
-    queryKey: ["lecturer-sessions", courseId],
-    queryFn: () => lecturerSessionsFor({ data: { courseId } }),
-    enabled: Boolean(courseId),
-  });
+  const reportQ = useQuery(courseReportQO(courseId));
+  const sessionsQ = useQuery(courseSessionsQO(courseId));
 
   const [duration, setDuration] = useState(15);
   const [topic, setTopic] = useState("");
@@ -59,23 +61,55 @@ function CourseDetailPage() {
 
   if (!course)
     return (
-      <div className="grid h-40 place-items-center text-muted-foreground">
-        Course not found.
+      <div className="mx-auto grid max-w-lg place-items-center gap-4 px-6 py-20 text-center">
+        <AlertTriangle className="h-8 w-8 text-muted-foreground" />
+        <div>
+          <div className="font-display text-lg font-semibold">Course not found</div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            It may have been removed, or it isn't assigned to you.
+          </p>
+        </div>
+        <Button variant="outline" onClick={() => navigate({ to: "/lecturer/courses" })}>
+          Back to my courses
+        </Button>
       </div>
     );
 
+  const doExport = async (kind: "pdf" | "excel") => {
+    if (!reportQ.data) return;
+    try {
+      if (kind === "pdf")
+        await exportPDF(reportQ.data, { institutionName: settings?.institutionName });
+      else await exportExcel(reportQ.data, { institutionName: settings?.institutionName });
+      toast.success(`${kind.toUpperCase()} report downloaded`);
+    } catch {
+      toast.error("Export failed");
+    }
+  };
+
   const start = async () => {
+    if (starting) return;
     setStarting(true);
     try {
       let coords: { latitude?: number; longitude?: number; radiusMeters?: number } = {};
       if (useGeo) {
         const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
-          navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000 }),
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+          }),
         );
-        coords = { latitude: pos.coords.latitude, longitude: pos.coords.longitude, radiusMeters: radius };
+        coords = {
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          radiusMeters: radius,
+        };
       }
-      const s = await startFn({
-        data: { courseId, durationMinutes: duration, topic: topic || undefined, ...coords },
+      const s = await sessions.start({
+        courseId,
+        durationMinutes: duration,
+        topic: topic || undefined,
+        ...coords,
       });
       toast.success("Session started");
       qc.invalidateQueries();
@@ -90,18 +124,25 @@ function CourseDetailPage() {
   return (
     <>
       <div className="mb-4 flex items-center gap-3">
-        <button onClick={() => navigate({ to: "/lecturer/courses" })} className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground">
+        <button
+          onClick={() => navigate({ to: "/lecturer/courses" })}
+          className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground"
+        >
           <ArrowLeft className="mr-1 h-4 w-4" /> All courses
         </button>
-        {course && <CourseGlyph icon={course.icon} color={course.color} seed={course.code} size="md" />}
+        <CourseGlyph icon={course.icon} color={course.color} seed={course.code} size="md" />
       </div>
       <PageHeader
         title={`${course.code} — ${course.title}`}
         subtitle={`Level ${course.level} · ${course.units} units · ${course.enrolledStudentIds.length} students`}
         actions={
           <div className="flex gap-2">
-            <Button variant="outline" disabled={!reportQ.data} onClick={() => reportQ.data && exportPDF(reportQ.data)}><FileDown className="mr-2 h-4 w-4" /> PDF</Button>
-            <Button variant="outline" disabled={!reportQ.data} onClick={() => reportQ.data && exportExcel(reportQ.data)}><FileSpreadsheet className="mr-2 h-4 w-4" /> Excel</Button>
+            <Button variant="outline" disabled={!reportQ.data} onClick={() => doExport("pdf")}>
+              <FileDown className="mr-2 h-4 w-4" /> PDF
+            </Button>
+            <Button variant="outline" disabled={!reportQ.data} onClick={() => doExport("excel")}>
+              <FileSpreadsheet className="mr-2 h-4 w-4" /> Excel
+            </Button>
           </div>
         }
       />
@@ -110,16 +151,42 @@ function CourseDetailPage() {
         <div className="lg:col-span-1">
           {openSession ? (
             <div className="rounded-2xl border border-primary/40 bg-primary/5 p-6 shadow-elegant">
-              <div className="text-xs font-medium uppercase tracking-widest text-primary">Session in progress</div>
-              <div className="mt-2 font-display text-3xl font-semibold tracking-widest">{openSession.code}</div>
+              <div className="text-xs font-medium uppercase tracking-widest text-primary">
+                Session in progress
+              </div>
+              <div className="mt-2 font-display text-3xl font-semibold tracking-widest">
+                {openSession.code}
+              </div>
               <div className="mt-1 text-sm text-muted-foreground">
                 Ends {new Date(openSession.expiresAt).toLocaleTimeString()}
               </div>
               <div className="mt-4 flex gap-2">
-                <Button className="flex-1" onClick={() => navigate({ to: "/lecturer/sessions/$sessionId", params: { sessionId: openSession.id } })}>
+                <Button
+                  className="flex-1"
+                  onClick={() =>
+                    navigate({
+                      to: "/lecturer/sessions/$sessionId",
+                      params: { sessionId: openSession.id },
+                    })
+                  }
+                >
                   Open live view
                 </Button>
-                <Button variant="outline" onClick={async () => { await endFn({ data: { sessionId: openSession.id } }); burstCelebrate(); qc.invalidateQueries(); toast.success(`${reportQ.data?.students?.length ?? 0} students reached`); }}>End</Button>
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    try {
+                      await sessions.end(openSession.id);
+                      burstCelebrate();
+                      qc.invalidateQueries();
+                      toast.success("Session ended");
+                    } catch (err) {
+                      toast.error(err instanceof Error ? err.message : "Failed");
+                    }
+                  }}
+                >
+                  End
+                </Button>
               </div>
             </div>
           ) : (
@@ -129,18 +196,30 @@ function CourseDetailPage() {
               <div className="mt-5 space-y-4">
                 <div className="space-y-1.5">
                   <Label>Topic (optional)</Label>
-                  <Input value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. Recursion basics" />
+                  <Input
+                    value={topic}
+                    onChange={(e) => setTopic(e.target.value)}
+                    placeholder="e.g. Recursion basics"
+                  />
                 </div>
                 <div className="space-y-1.5">
                   <Label>Duration (minutes)</Label>
-                  <Input type="number" min={1} max={240} value={duration} onChange={(e) => setDuration(Number(e.target.value))} />
+                  <Input
+                    type="number"
+                    min={1}
+                    max={240}
+                    value={duration}
+                    onChange={(e) => setDuration(Number(e.target.value))}
+                  />
                 </div>
                 <div className="flex items-start justify-between gap-3 rounded-xl border border-border/60 p-3">
                   <div className="flex items-start gap-2">
                     <MapPin className="mt-0.5 h-4 w-4 text-muted-foreground" />
                     <div>
                       <div className="text-sm font-medium">GPS verification</div>
-                      <div className="text-xs text-muted-foreground">Restrict sign-ins to the venue.</div>
+                      <div className="text-xs text-muted-foreground">
+                        Restrict sign-ins to the venue.
+                      </div>
                     </div>
                   </div>
                   <Switch checked={useGeo} onCheckedChange={setUseGeo} />
@@ -148,11 +227,17 @@ function CourseDetailPage() {
                 {useGeo && (
                   <div className="space-y-1.5">
                     <Label>Radius (meters)</Label>
-                    <Input type="number" min={10} max={5000} value={radius} onChange={(e) => setRadius(Number(e.target.value))} />
+                    <Input
+                      type="number"
+                      min={10}
+                      max={5000}
+                      value={radius}
+                      onChange={(e) => setRadius(Number(e.target.value))}
+                    />
                   </div>
                 )}
                 <Button className="w-full" onClick={start} disabled={starting}>
-                  <PlayCircle className="mr-2 h-4 w-4" /> Start session
+                  <PlayCircle className="mr-2 h-4 w-4" /> {starting ? "Starting…" : "Start session"}
                 </Button>
               </div>
             </div>
@@ -163,7 +248,9 @@ function CourseDetailPage() {
           <div className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
             <div className="flex items-center justify-between">
               <h2 className="font-display text-lg font-semibold">Student attendance</h2>
-              <div className="text-xs text-muted-foreground">{reportQ.data?.totalSessions ?? 0} sessions held</div>
+              <div className="text-xs text-muted-foreground">
+                {reportQ.data?.totalSessions ?? 0} sessions held
+              </div>
             </div>
             <div className="mt-4 max-h-[420px] overflow-auto rounded-xl border border-border/60">
               <Table>
@@ -175,6 +262,20 @@ function CourseDetailPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
+                  {reportQ.isLoading && (
+                    <TableRow>
+                      <TableCell colSpan={3} className="py-8 text-center text-muted-foreground">
+                        Loading…
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {reportQ.isError && (
+                    <TableRow>
+                      <TableCell colSpan={3} className="py-8 text-center text-destructive">
+                        Failed to load the report.
+                      </TableCell>
+                    </TableRow>
+                  )}
                   {(reportQ.data?.students ?? []).map((s) => (
                     <TableRow key={s.id}>
                       <TableCell className="font-medium">{s.name}</TableCell>
@@ -182,11 +283,26 @@ function CourseDetailPage() {
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <Progress value={s.percentage} className="h-2" />
-                          <span className={s.percentage < threshold ? "text-destructive font-mono text-xs" : "font-mono text-xs"}>{s.percentage}%</span>
+                          <span
+                            className={
+                              s.percentage < threshold
+                                ? "text-destructive font-mono text-xs"
+                                : "font-mono text-xs"
+                            }
+                          >
+                            {s.percentage}%
+                          </span>
                         </div>
                       </TableCell>
                     </TableRow>
                   ))}
+                  {reportQ.data && reportQ.data.students.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={3} className="py-8 text-center text-muted-foreground">
+                        No students enrolled yet.
+                      </TableCell>
+                    </TableRow>
+                  )}
                 </TableBody>
               </Table>
             </div>
@@ -198,15 +314,24 @@ function CourseDetailPage() {
               {(sessionsQ.data ?? []).map((s) => (
                 <li key={s.id}>
                   <button
-                    onClick={() => navigate({ to: "/lecturer/sessions/$sessionId", params: { sessionId: s.id } })}
+                    onClick={() =>
+                      navigate({ to: "/lecturer/sessions/$sessionId", params: { sessionId: s.id } })
+                    }
                     className="flex w-full items-center justify-between py-3 text-left hover:opacity-80"
                   >
                     <div>
-                      <div className="text-sm font-medium">{new Date(s.startedAt).toLocaleString()}</div>
-                      <div className="text-xs text-muted-foreground">Code {s.code}{s.topic ? ` · ${s.topic}` : ""}</div>
+                      <div className="text-sm font-medium">
+                        {new Date(s.startedAt).toLocaleString()}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        Code {s.code}
+                        {s.topic ? ` · ${s.topic}` : ""}
+                      </div>
                     </div>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                      <span className={`rounded-full px-2 py-0.5 ${s.endedAt ? "bg-muted" : "bg-success/10 text-success"}`}>
+                      <span
+                        className={`rounded-full px-2 py-0.5 ${s.endedAt ? "bg-muted" : "bg-success/10 text-success"}`}
+                      >
                         {s.endedAt ? "closed" : "live"}
                       </span>
                       <ChevronRight className="h-4 w-4" />
@@ -214,7 +339,7 @@ function CourseDetailPage() {
                   </button>
                 </li>
               ))}
-              {(sessionsQ.data?.length ?? 0) === 0 && (
+              {(sessionsQ.data?.length ?? 0) === 0 && !sessionsQ.isLoading && (
                 <li className="py-6 text-center text-sm text-muted-foreground">No sessions yet</li>
               )}
             </ul>

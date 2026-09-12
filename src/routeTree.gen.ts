@@ -15,7 +15,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as LecturerRouteImport } from './routes/lecturer'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as StudentIndexRouteImport } from './routes/student.index'
+import { Route as StudentIndexRouteImport } from './routes/student/index'
 import { Route as LecturerIndexRouteImport } from './routes/lecturer.index'
 import { Route as AdminIndexRouteImport } from './routes/admin.index'
 import { Route as StudentHistoryRouteImport } from './routes/student.history'
@@ -543,13 +543,3 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}

@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { getSiteSettings } from "./api.functions";
-import type { Testimonial } from "./db.server";
+
+import { publicSettingsQO, siteSettingsQO } from "./queries";
+import type { Testimonial } from "./types";
 
 export interface SiteSettingsData {
   id: string;
@@ -12,8 +13,8 @@ export interface SiteSettingsData {
   demoPassword: string;
   demoEmailDomain: string;
   showFakeStats: boolean;
-  primaryColor?: string | null;
-  contactEmail?: string | null;
+  primaryColor: string | null;
+  contactEmail: string | null;
 }
 
 export const DEFAULT_SITE_SETTINGS: SiteSettingsData = {
@@ -30,13 +31,17 @@ export const DEFAULT_SITE_SETTINGS: SiteSettingsData = {
   contactEmail: null,
 };
 
-export const siteSettingsQO = {
-  queryKey: ["siteSettings"] as const,
-  queryFn: () => getSiteSettings(),
-};
+/**
+ * Public branding for unauthenticated pages (landing + login).
+ * Falls back to defaults if the API is unreachable.
+ */
+export function usePublicSettings() {
+  return useQuery(publicSettingsQO);
+}
 
+/** Full settings for authenticated pages (admin branding page, thresholds). */
 export function useSiteSettings() {
-  return useQuery({ ...siteSettingsQO, staleTime: 60_000 });
+  return useQuery(siteSettingsQO);
 }
 
 export function useAtRiskThreshold(): number {

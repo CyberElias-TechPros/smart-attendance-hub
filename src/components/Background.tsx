@@ -5,7 +5,13 @@ import { cn } from "@/lib/utils";
  * Layered, animated backdrop: drifting aurora blobs + subtle grid + noise.
  * Purely decorative — sits behind content (absolute, -z-10).
  */
-export function AuroraBackground({ className, children }: { className?: string; children?: ReactNode }) {
+export function AuroraBackground({
+  className,
+  children,
+}: {
+  className?: string;
+  children?: ReactNode;
+}) {
   return (
     <div className={cn("relative isolate overflow-hidden", className)}>
       <div aria-hidden className="pointer-events-none absolute inset-0 -z-10">
