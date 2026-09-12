@@ -33,7 +33,7 @@ export async function exportPDF(report: CourseReportData, options: ExportOptions
 
   autoTable(doc, {
     startY: 50,
-    head: [["#", "Name", "Matric", "Attended", "Total", "%"]],
+    head: [["#", "Name", "Matric", "Attended", "Total", "%", "Devices"]],
     body: students.map((s, i) => [
       String(i + 1),
       s.name,
@@ -41,6 +41,7 @@ export async function exportPDF(report: CourseReportData, options: ExportOptions
       String(s.attended),
       String(totalSessions),
       `${s.percentage}%`,
+      s.devices > 1 ? `${s.devices} (!)` : String(s.devices),
     ]),
     styles: { fontSize: 10 },
     headStyles: { fillColor: [15, 92, 75] },
@@ -60,6 +61,7 @@ export async function exportExcel(report: CourseReportData, _options: ExportOpti
     Attended: s.attended,
     Total: totalSessions,
     "Attendance %": s.percentage,
+    Devices: s.devices,
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();

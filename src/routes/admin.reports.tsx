@@ -127,6 +127,12 @@ function ReportsPage() {
                   <TableHead>Matric</TableHead>
                   <TableHead className="text-right">Attended</TableHead>
                   <TableHead className="w-64">Attendance %</TableHead>
+                  <TableHead
+                    className="w-20 text-right"
+                    title="Distinct devices this student signed in from. More than one is worth a look."
+                  >
+                    Devices
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -151,11 +157,25 @@ function ReportsPage() {
                         </span>
                       </div>
                     </TableCell>
+                    <TableCell className="text-right">
+                      {s.devices > 1 ? (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 font-mono text-xs font-semibold text-warning"
+                          title={`${s.name} signed in from ${s.devices} different devices`}
+                        >
+                          {s.devices} (!)
+                        </span>
+                      ) : (
+                        <span className="font-mono text-xs text-muted-foreground">
+                          {s.devices || "—"}
+                        </span>
+                      )}
+                    </TableCell>
                   </TableRow>
                 ))}
                 {reportQ.data.students.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
+                    <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
                       No students enrolled in this course.
                     </TableCell>
                   </TableRow>

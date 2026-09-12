@@ -50,6 +50,9 @@ export interface AttendanceSession {
   longitude?: number;
   radiusMeters?: number;
   topic?: string;
+  codeIntervalSeconds?: number;
+  codeUpdatedAt?: number;
+  prevCode?: string;
 }
 
 export interface Testimonial {
@@ -95,12 +98,15 @@ export interface SessionDetail {
   session: AttendanceSession;
   course: Course;
   totalEnrolled: number;
+  codeExpiresAt?: number;
   attendance: Array<{
     id: string;
     studentId: string;
     name: string;
     matricNo: string;
     timestamp: number;
+    deviceId?: string;
+    distanceMeters?: number;
   }>;
 }
 
@@ -127,6 +133,7 @@ export interface CourseReportStudent {
   matricNo: string;
   attended: number;
   percentage: number;
+  devices: number;
 }
 
 export interface CourseReport {
@@ -153,6 +160,7 @@ export interface FacultyReport {
     attended: number;
     total: number;
     percentage: number;
+    devices: number;
   }>;
 }
 

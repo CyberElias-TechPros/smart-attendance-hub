@@ -243,6 +243,7 @@ export const sessions = {
     latitude?: number;
     longitude?: number;
     radiusMeters?: number;
+    codeIntervalSeconds?: number | null;
   }) => request<AttendanceSession>("/api/sessions", { method: "POST", body: input }),
   detail: (sessionId: string) =>
     request<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}`),
@@ -264,7 +265,12 @@ export const student = {
     request<StudentCourseSession[]>(`/api/me/courses/${encodeURIComponent(courseId)}/sessions`),
   history: () => request<StudentHistoryItem[]>("/api/me/history"),
   openSessions: () => request<OpenSession[]>("/api/me/open-sessions"),
-  submitAttendance: (input: { code: string; latitude?: number; longitude?: number }) =>
+  submitAttendance: (input: {
+    code: string;
+    latitude?: number;
+    longitude?: number;
+    deviceId?: string;
+  }) =>
     request<{ course: { code: string; title: string }; timestamp: number }>("/api/attendance", {
       method: "POST",
       body: input,

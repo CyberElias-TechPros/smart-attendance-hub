@@ -417,6 +417,51 @@ describe("worker handler (integration)", () => {
     await h.call("POST", `/api/sessions/${created.id}/end`, { token: lecturerToken });
   });
 
+  it("rotating sessions expose code expiry and honor the grace window end-to-end", async () => {
+    const started = await h.call("POST", "/api/sessions", {
+      token: lecturerToken,
+      body: { courseId: courseA.id, durationMinutes: 15, codeIntervalSeconds: 60 },
+    });
+    expect(started.status).toBe(201);
+    const created = (await started.json()) as { id: string; code: string };
+    const c1 = created.code;
+
+    const d1 = await h.call("GET", `/api/sessions/${created.id}`, { token: lecturerToken });
+    expect(d1.status).toBe(200);
+    expect(((await d1.json()) as { codeExpiresAt?: number }).codeExpiresAt).toBeGreaterThan(
+      Date.now(),
+    );
+
+    // Force the slot to elapse; the next lecturer poll rotates the code.
+    h.raw
+      .prepare("UPDATE sessions SET code_updated_at = ? WHERE id = ?")
+      .run(Date.now() - 61_000, created.id);
+    const d2 = await h.call("GET", `/api/sessions/${created.id}`, { token: lecturerToken });
+    const detail2 = (await d2.json()) as { session: { code: string } };
+    expect(detail2.session.code).not.toBe(c1);
+
+    // Student signs in with the previous code (grace) + device id.
+    const att = await h.call("POST", "/api/attendance", {
+      token: studentToken,
+      body: { code: c1, deviceId: "http-test-device" },
+    });
+    expect(att.status).toBe(200);
+
+    // The device surfaces in the course report.
+    const rep = await h.call("GET", `/api/reports/course/${courseA.id}`, { token: lecturerToken });
+    const report = (await rep.json()) as { students: Array<{ devices: number }> };
+    expect(report.students.some((s) => s.devices >= 1)).toBe(true);
+
+    // Nonsense intervals are rejected.
+    const bad = await h.call("POST", "/api/sessions", {
+      token: lecturerToken,
+      body: { courseId: courseA.id, codeIntervalSeconds: 5 },
+    });
+    expect(bad.status).toBe(400);
+
+    await h.call("POST", `/api/sessions/${created.id}/end`, { token: lecturerToken });
+  });
+
   it("profile self-update works for admins (previously broken)", async () => {
     const res = await h.call("PATCH", "/api/users/profile", {
       token: adminToken,

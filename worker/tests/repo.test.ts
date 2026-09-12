@@ -358,6 +358,118 @@ describe("repo (integration, real SQLite via D1 shim)", () => {
       await repo.endSession(s1.id);
       await repo.endSession(s2.id);
     });
+
+    it("rotating codes advance with a grace window, and record device + distance", async () => {
+      const c = await repo.getCourseByCode("CSC 311");
+      const lec = (await repo.listUsers("lecturer")).find((l) => l.email === DEMO.lecturer)!;
+      const ada = await repo.getUserByEmail(DEMO.student);
+      const bello = await repo.getUserByEmail("bello@slams.edu");
+      const eze = await repo.getUserByEmail("eze@slams.edu");
+
+      const s = await repo.startSession({
+        courseId: c!.id,
+        lecturerId: lec.id,
+        durationMinutes: 15,
+        latitude: 6.5,
+        longitude: 3.4,
+        radiusMeters: 500,
+        codeIntervalSeconds: 60,
+      });
+      expect(s.codeIntervalSeconds).toBe(60);
+      const c1 = s.code;
+
+      // Force the slot to elapse, then rotate (as a lecturer poll would).
+      shim.raw
+        .prepare("UPDATE sessions SET code_updated_at = ? WHERE id = ?")
+        .run(Date.now() - 61_000, s.id);
+      const rotated = await repo.rotateSessionCodeIfNeeded(s.id);
+      expect(rotated!.code).not.toBe(c1);
+      expect(rotated!.prevCode).toBe(c1);
+      const c2 = rotated!.code;
+
+      // Previous code still works inside the grace window…
+      const r1 = await repo.submitAttendance({
+        code: c1,
+        studentId: ada!.id,
+        latitude: 6.5005,
+        longitude: 3.4005,
+        deviceId: "ada-phone-1",
+      });
+      expect(r1.course.code).toBe("CSC 311");
+
+      // …and the forensics landed on the record.
+      const rec = shim.raw
+        .prepare(
+          "SELECT device_id, distance_meters FROM attendance_records WHERE session_id = ? AND student_id = ?",
+        )
+        .get(s.id, ada!.id) as { device_id: string; distance_meters: number };
+      expect(rec.device_id).toBe("ada-phone-1");
+      expect(rec.distance_meters).toBeGreaterThanOrEqual(0);
+      expect(rec.distance_meters).toBeLessThan(500);
+
+      // Current code works too.
+      await repo.submitAttendance({
+        code: c2,
+        studentId: bello!.id,
+        latitude: 6.5,
+        longitude: 3.4,
+        deviceId: "bello-phone-9",
+      });
+
+      // Detail view exposes the rotation countdown + per-row forensics.
+      const detail = await repo.sessionDetail(s.id);
+      expect(detail!.codeExpiresAt).toBeGreaterThan(Date.now());
+      const adaRow = detail!.attendance.find((a) => a.studentId === ada!.id)!;
+      expect(adaRow.deviceId).toBe("ada-phone-1");
+      expect(adaRow.distanceMeters).toBe(rec.distance_meters);
+
+      // After a second rotation the first code is fully retired…
+      shim.raw
+        .prepare("UPDATE sessions SET code_updated_at = ? WHERE id = ?")
+        .run(Date.now() - 61_000, s.id);
+      await expect(
+        repo.submitAttendance({ code: c1, studentId: eze!.id, latitude: 6.5, longitude: 3.4 }),
+      ).rejects.toThrow("Invalid or expired");
+      // …while the then-current code is honored through its own grace.
+      await repo.submitAttendance({ code: c2, studentId: eze!.id, latitude: 6.5, longitude: 3.4 });
+
+      // A stale previous code between rotations gets the retryable message.
+      const slow = await repo.startSession({
+        courseId: c!.id,
+        lecturerId: lec.id,
+        durationMinutes: 15,
+        codeIntervalSeconds: 600,
+      });
+      const slowC1 = slow.code;
+      shim.raw
+        .prepare("UPDATE sessions SET code_updated_at = ? WHERE id = ?")
+        .run(Date.now() - 601_000, slow.id);
+      await repo.rotateSessionCodeIfNeeded(slow.id);
+      shim.raw
+        .prepare("UPDATE sessions SET code_updated_at = ? WHERE id = ?")
+        .run(Date.now() - 61_000, slow.id); // past grace, before next rotation
+      await expect(repo.submitAttendance({ code: slowC1, studentId: ada!.id })).rejects.toThrow(
+        "just expired",
+      );
+
+      // Static sessions never rotate and expose no countdown.
+      const sStatic = await repo.startSession({
+        courseId: c!.id,
+        lecturerId: lec.id,
+        durationMinutes: 15,
+      });
+      expect((await repo.rotateSessionCodeIfNeeded(sStatic.id))!.code).toBe(sStatic.code);
+      expect((await repo.sessionDetail(sStatic.id))!.codeExpiresAt).toBeUndefined();
+
+      // Device counts surface in the report.
+      const report = await repo.courseReport(c!.id);
+      const adaReport = report!.students.find((x) => x.id === ada!.id)!;
+      expect(adaReport.devices).toBeGreaterThanOrEqual(1);
+
+      await repo.endSession(s.id);
+      await repo.endSession(slow.id);
+      await repo.endSession(sStatic.id);
+    });
   });
 
   describe("student views", () => {

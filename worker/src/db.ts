@@ -47,6 +47,18 @@ export function generateCode(): string {
   return String(100000 + Math.floor(Math.random() * 900000));
 }
 
+/** How long a retired (rotated) code stays valid, so a student mid-sign-in
+ *  isn't rejected by a rotation boundary. */
+export const PREV_CODE_GRACE_MS = 60_000;
+
+/** Client device ids are opaque tokens; keep only a safe alphabet (anything
+ *  else -> NULL, never a validation failure that could strand a student). */
+export function sanitizeDeviceId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const clean = value.replace(/[^A-Za-z0-9-]/g, "").slice(0, 64);
+  return clean ? clean : null;
+}
+
 export function haversineMeters(
   a: { lat: number; lng: number },
   b: { lat: number; lng: number },
@@ -202,6 +214,9 @@ export class Repo {
       longitude: optNum(r.longitude),
       radiusMeters: optNum(r.radius_meters),
       topic: optStr(r.topic),
+      codeIntervalSeconds: optNum(r.code_interval_seconds),
+      codeUpdatedAt: optNum(r.code_updated_at),
+      prevCode: optStr(r.prev_code),
     };
   }
 
@@ -720,18 +735,9 @@ export class Repo {
 
   // ── Sessions ──
 
-  async startSession(input: {
-    courseId: string;
-    lecturerId: string;
-    durationMinutes: number;
-    topic?: string;
-    latitude?: number;
-    longitude?: number;
-    radiusMeters?: number;
-  }): Promise<AttendanceSession> {
-    const now = Date.now();
-    // A code must be unique among currently open sessions, otherwise
-    // submitAttendance's `WHERE code = ?` lookup would be ambiguous.
+  /** A session code must be unique among currently open sessions, otherwise
+   *  submitAttendance's code lookup would be ambiguous. */
+  private async freshCode(): Promise<string> {
     let code = generateCode();
     for (let i = 0; i < 5; i++) {
       const clash = await this.first<{ c: number }>(
@@ -741,21 +747,38 @@ export class Repo {
       if (!clash || clash.c === 0) break;
       code = generateCode();
     }
+    return code;
+  }
+
+  async startSession(input: {
+    courseId: string;
+    lecturerId: string;
+    durationMinutes: number;
+    topic?: string;
+    latitude?: number;
+    longitude?: number;
+    radiusMeters?: number;
+    codeIntervalSeconds?: number;
+  }): Promise<AttendanceSession> {
+    const now = Date.now();
     const s: AttendanceSession = {
       id: nanoid(10),
       courseId: input.courseId,
       lecturerId: input.lecturerId,
-      code,
+      code: await this.freshCode(),
       startedAt: now,
       expiresAt: now + input.durationMinutes * 60 * 1000,
       topic: input.topic,
       latitude: input.latitude,
       longitude: input.longitude,
       radiusMeters: input.radiusMeters,
+      codeIntervalSeconds: input.codeIntervalSeconds,
+      codeUpdatedAt: input.codeIntervalSeconds ? now : undefined,
     };
     await this.run(
-      `INSERT INTO sessions (id, course_id, lecturer_id, code, started_at, expires_at, ended_at, latitude, longitude, radius_meters, topic)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO sessions (id, course_id, lecturer_id, code, started_at, expires_at, ended_at, latitude, longitude, radius_meters, topic,
+        code_interval_seconds, code_updated_at, prev_code)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         s.id,
         s.courseId,
@@ -768,9 +791,38 @@ export class Repo {
         s.longitude ?? null,
         s.radiusMeters ?? null,
         s.topic ?? null,
+        s.codeIntervalSeconds ?? null,
+        s.codeUpdatedAt ?? null,
+        null,
       ],
     );
     return s;
+  }
+
+  /**
+   * Advances a rotating session's code when its slot has elapsed. Called
+   * lazily on every lecturer poll AND every student submission, so rotation
+   * keeps working even if the lecturer closes the live view.
+   *
+   * Rotation is atomic-ish: the UPDATE only applies if the row still carries
+   * the code generation we read, so concurrent isolates can't strand a
+   * student between two rotations (the loser re-reads the winner's code).
+   * Returns the current (possibly rotated) session, or the input session when
+   * no rotation was due.
+   */
+  async rotateSessionCodeIfNeeded(sessionId: string): Promise<AttendanceSession | undefined> {
+    const s = await this.getSession(sessionId);
+    if (!s || !s.codeIntervalSeconds || s.endedAt || s.expiresAt <= Date.now()) return s;
+    const updatedAt = s.codeUpdatedAt ?? s.startedAt;
+    if (Date.now() - updatedAt < s.codeIntervalSeconds * 1000) return s;
+    const next = await this.freshCode();
+    const now = Date.now();
+    await this.run(
+      `UPDATE sessions SET prev_code = code, code = ?, code_updated_at = ?
+       WHERE id = ? AND code_updated_at IS ? AND code = ?`,
+      [next, now, sessionId, s.codeUpdatedAt ?? null, s.code],
+    );
+    return (await this.getSession(sessionId)) ?? s;
   }
 
   async endSession(sessionId: string): Promise<void> {
@@ -794,12 +846,14 @@ export class Repo {
   }
 
   async sessionDetail(sessionId: string): Promise<SessionDetail | undefined> {
-    const s = await this.getSession(sessionId);
+    // Rotation happens here (lecturer polls every few seconds)…
+    const s = await this.rotateSessionCodeIfNeeded(sessionId);
     if (!s) return undefined;
     const course = await this.getCourse(s.courseId);
     if (!course) return undefined;
     const rows = await this.all<Row>(
-      `SELECT ar.id, ar.student_id, ar.timestamp, u.name AS student_name, u.matric_no
+      `SELECT ar.id, ar.student_id, ar.timestamp, ar.device_id, ar.distance_meters,
+              u.name AS student_name, u.matric_no
        FROM attendance_records ar JOIN users u ON u.id = ar.student_id
        WHERE ar.session_id = ? ORDER BY ar.timestamp ASC`,
       [sessionId],
@@ -808,12 +862,18 @@ export class Repo {
       session: s,
       course,
       totalEnrolled: course.enrolledStudentIds.length,
+      codeExpiresAt:
+        s.codeIntervalSeconds && !s.endedAt
+          ? (s.codeUpdatedAt ?? s.startedAt) + s.codeIntervalSeconds * 1000
+          : undefined,
       attendance: rows.map((r) => ({
         id: str(r.id),
         studentId: str(r.student_id),
         name: optStr(r.student_name) ?? "Unknown",
         matricNo: optStr(r.matric_no) ?? "—",
         timestamp: num(r.timestamp),
+        deviceId: optStr(r.device_id),
+        distanceMeters: optNum(r.distance_meters),
       })),
     };
   }
@@ -841,19 +901,43 @@ export class Repo {
     studentId: string;
     latitude?: number;
     longitude?: number;
+    deviceId?: string;
   }): Promise<{ course: { code: string; title: string }; timestamp: number }> {
     const now = Date.now();
+    // Match the current code OR the previous one (rotation grace). Prefer a
+    // current-code match: a retired code could theoretically equal another
+    // session's live code, and the live one is the right session.
     const r = await this.first<Row>(
-      "SELECT * FROM sessions WHERE code = ? AND ended_at IS NULL AND expires_at > ? LIMIT 1",
-      [input.code, now],
+      `SELECT * FROM sessions
+       WHERE (code = ? OR prev_code = ?) AND ended_at IS NULL AND expires_at > ?
+       ORDER BY CASE WHEN code = ? THEN 0 ELSE 1 END LIMIT 1`,
+      [input.code, input.code, now, input.code],
     );
     if (!r) throw new BusinessError("Invalid or expired attendance code");
-    const s = this.rowToSession(r);
+    let s = this.rowToSession(r);
+    // Rotation also happens here, so codes keep refreshing even if the
+    // lecturer closed the live view. A student holding the pre-rotation code
+    // still validates via the grace window below.
+    s = (await this.rotateSessionCodeIfNeeded(s.id)) ?? s;
+    if (s.code !== input.code) {
+      const withinGrace =
+        s.prevCode === input.code &&
+        s.codeIntervalSeconds != null &&
+        now - (s.codeUpdatedAt ?? 0) <= PREV_CODE_GRACE_MS;
+      if (!withinGrace) {
+        throw new BusinessError(
+          s.prevCode === input.code
+            ? "That code just expired — enter the code currently on screen"
+            : "Invalid or expired attendance code",
+        );
+      }
+    }
     const course = await this.getCourse(s.courseId);
     if (!course) throw new BusinessError("Course not found");
     if (!course.enrolledStudentIds.includes(input.studentId)) {
       throw new BusinessError("You are not enrolled in this course");
     }
+    let distanceMeters: number | undefined;
     if (s.latitude != null && s.longitude != null && s.radiusMeters != null) {
       if (input.latitude == null || input.longitude == null) {
         throw new BusinessError("Location required for this session");
@@ -867,11 +951,13 @@ export class Repo {
           `You are ${Math.round(dist)}m from the venue (max ${s.radiusMeters}m)`,
         );
       }
+      distanceMeters = Math.round(dist);
     }
+    const deviceId = sanitizeDeviceId(input.deviceId);
     try {
       await this.run(
-        `INSERT INTO attendance_records (id, session_id, student_id, course_id, timestamp, latitude, longitude)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO attendance_records (id, session_id, student_id, course_id, timestamp, latitude, longitude, device_id, distance_meters)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           nanoid(10),
           s.id,
@@ -880,6 +966,8 @@ export class Repo {
           now,
           input.latitude ?? null,
           input.longitude ?? null,
+          deviceId,
+          distanceMeters ?? null,
         ],
       );
     } catch (e) {
@@ -973,12 +1061,13 @@ export class Repo {
     const total = sessions.length;
     const rows = await this.all<Row>(
       `SELECT u.id, u.name, u.matric_no,
-        (SELECT COUNT(*) FROM attendance_records ar WHERE ar.course_id = ? AND ar.student_id = u.id) AS attended
+        (SELECT COUNT(*) FROM attendance_records ar WHERE ar.course_id = ? AND ar.student_id = u.id) AS attended,
+        (SELECT COUNT(DISTINCT ar2.device_id) FROM attendance_records ar2 WHERE ar2.course_id = ? AND ar2.student_id = u.id) AS devices
        FROM course_enrollments ce
        JOIN users u ON u.id = ce.student_id
        WHERE ce.course_id = ?
        ORDER BY u.name ASC`,
-      [courseId, courseId],
+      [courseId, courseId, courseId],
     );
     const students = rows.map((r) => {
       const attended = num(r.attended);
@@ -988,6 +1077,7 @@ export class Repo {
         matricNo: optStr(r.matric_no) ?? "—",
         attended,
         percentage: total === 0 ? 0 : Math.round((attended / total) * 100),
+        devices: num(r.devices),
       };
     });
     students.sort((a, b) => b.percentage - a.percentage || a.name.localeCompare(b.name));
@@ -1034,7 +1124,9 @@ export class Repo {
            JOIN course_enrollments ce ON ce.course_id = s.course_id AND ce.student_id = u.id) AS total,
         (SELECT COUNT(DISTINCT ar.session_id) FROM attendance_records ar
            JOIN course_enrollments ce ON ce.student_id = ar.student_id AND ce.course_id = ar.course_id
-           WHERE ar.student_id = u.id) AS attended
+           WHERE ar.student_id = u.id) AS attended,
+        (SELECT COUNT(DISTINCT ar2.device_id) FROM attendance_records ar2
+           WHERE ar2.student_id = u.id) AS devices
        FROM users u
        WHERE u.role = 'student'
          AND EXISTS (SELECT 1 FROM course_enrollments ce WHERE ce.student_id = u.id)
@@ -1051,6 +1143,7 @@ export class Repo {
         attended,
         total,
         percentage: total === 0 ? 0 : Math.round((attended / total) * 100),
+        devices: num(r.devices),
       };
     });
     students.sort((a, b) => b.percentage - a.percentage || a.name.localeCompare(b.name));

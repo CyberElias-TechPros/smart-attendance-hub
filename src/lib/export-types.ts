@@ -9,6 +9,7 @@ export interface CourseReportData {
     matricNo: string;
     attended: number;
     percentage: number;
+    devices: number;
   }>;
 }
 

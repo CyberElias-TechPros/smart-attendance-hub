@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { z } from "zod";
 import { burstSuccess } from "@/lib/confetti";
+import { getDeviceId, shortDeviceId } from "@/lib/device";
 
 const searchSchema = z.object({ code: z.string().optional() });
 
@@ -78,7 +79,7 @@ function AttendPage() {
           /* geo unavailable, proceed without */
         }
       }
-      const r = await student.submitAttendance({ code: c, ...coords });
+      const r = await student.submitAttendance({ code: c, ...coords, deviceId: getDeviceId() });
       setResult(r);
       burstSuccess();
       toast.success("Attendance recorded");
@@ -195,6 +196,9 @@ function AttendPage() {
                 {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Submit attendance
               </Button>
+              <p className="text-center font-mono text-[11px] text-muted-foreground">
+                Signing in from this device · {shortDeviceId(getDeviceId())}
+              </p>
             </div>
           </div>
 

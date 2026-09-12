@@ -182,6 +182,9 @@ const startSessionSchema = z
     latitude: latSchema.optional(),
     longitude: lngSchema.optional(),
     radiusMeters: z.number().int().min(10).max(5000).optional(),
+    // Anti-sharing: when set, the code rotates every N seconds (with a grace
+    // window for students mid-sign-in). Null/omitted = one static code.
+    codeIntervalSeconds: z.number().int().min(30).max(600).nullish(),
   })
   // A geofence is only enforced when ALL of lat/lng/radius are present —
   // reject partial coordinates instead of silently running an open session.
@@ -203,6 +206,9 @@ const attendanceSchema = z.object({
     .refine((s) => s.length === 6, { message: "Attendance code must be exactly 6 digits" }),
   latitude: latSchema.optional(),
   longitude: lngSchema.optional(),
+  // Opaque per-device token (generated client-side, persisted). Sanitized,
+  // never trusted, in the repo layer — see sanitizeDeviceId.
+  deviceId: z.string().trim().max(64).optional().or(z.literal("")),
 });
 
 const testimonialSchema = z.object({
@@ -618,6 +624,7 @@ const routes: Route[] = [
       const session = await ctx.repo.startSession({
         ...data,
         durationMinutes: data.durationMinutes ?? 15,
+        codeIntervalSeconds: data.codeIntervalSeconds ?? undefined,
         lecturerId: ctx.user.id,
       });
       return jsonOk(session, { status: 201 });
