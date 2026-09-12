@@ -345,9 +345,10 @@ export class Repo {
       [
         input.name,
         input.email,
-        input.matricNo ?? null,
-        input.departmentId ?? null,
-        input.level ?? null,
+        // Omitted fields keep existing values; "" department → NULL (unassigned).
+        input.matricNo ?? u.matricNo ?? null,
+        input.departmentId === undefined ? (u.departmentId ?? null) : input.departmentId || null,
+        input.level ?? u.level ?? null,
         id,
       ],
     );
@@ -376,11 +377,13 @@ export class Repo {
       [input.email, id],
     );
     if (taken && taken.c > 0) throw new BusinessError("Email already in use");
+    // Omitted fields keep their existing values (partial updates must not
+    // wipe data); an explicit "" department means "unassigned" → NULL.
     await this.run("UPDATE users SET name=?, email=?, staff_id=?, department_id=? WHERE id=?", [
       input.name,
       input.email,
-      input.staffId ?? null,
-      input.departmentId ?? null,
+      input.staffId ?? u.staffId ?? null,
+      input.departmentId === undefined ? (u.departmentId ?? null) : input.departmentId || null,
       id,
     ]);
     if (input.password) {
@@ -437,6 +440,13 @@ export class Repo {
     }
     await this.run("DELETE FROM course_enrollments WHERE student_id = ?", [id]);
     await this.run("DELETE FROM attendance_records WHERE student_id = ?", [id]);
+    // Lecturer sessions go away too — and so must every sign-in recorded
+    // against them, otherwise course percentages (records ÷ sessions) inflate
+    // past 100% and reports reference sessions that no longer exist.
+    await this.run(
+      "DELETE FROM attendance_records WHERE session_id IN (SELECT id FROM sessions WHERE lecturer_id = ?)",
+      [id],
+    );
     await this.run("DELETE FROM sessions WHERE lecturer_id = ?", [id]);
     await this.run("UPDATE courses SET lecturer_id = NULL WHERE lecturer_id = ?", [id]);
     await this.run("DELETE FROM users WHERE id = ?", [id]);
@@ -934,8 +944,12 @@ export class Repo {
     const courseIds = enroll.map((e) => e.course_id);
     if (courseIds.length === 0) return [];
     const marks = courseIds.map(() => "?").join(",");
+    // NOTE: the sign-in code is deliberately NOT returned here. This feed is
+    // visible to every enrolled student wherever they are — handing them the
+    // code would let anyone sign in remotely without attending. Students
+    // must scan the QR or read the code displayed in the venue.
     const rows = await this.all<Row>(
-      `SELECT s.id AS session_id, s.course_id, s.code, s.expires_at, c.code AS course_code, c.title AS course_title
+      `SELECT s.id AS session_id, s.course_id, s.expires_at, c.code AS course_code, c.title AS course_title
        FROM sessions s JOIN courses c ON c.id = s.course_id
        WHERE s.ended_at IS NULL AND s.expires_at > ? AND s.course_id IN (${marks})
        ORDER BY s.expires_at ASC`,
@@ -946,7 +960,6 @@ export class Repo {
       courseId: str(r.course_id),
       courseCode: str(r.course_code),
       courseTitle: str(r.course_title),
-      code: str(r.code),
       expiresAt: num(r.expires_at),
     }));
   }

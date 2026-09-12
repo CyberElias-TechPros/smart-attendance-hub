@@ -100,7 +100,7 @@ comments).
 ### Tests
 
 ```bash
-npm test             # worker auth + repo (real SQLite) + full HTTP handler suites
+npm test             # API client + worker auth + repo (real SQLite) + full HTTP handler suites
 npm run typecheck    # tsc --noEmit (frontend + worker)
 npm run lint         # eslint + prettier
 ```

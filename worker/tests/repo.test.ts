@@ -109,6 +109,83 @@ describe("repo (integration, real SQLite via D1 shim)", () => {
       const admin = await repo.getUserByEmail(DEMO.admin);
       await expect(repo.deleteUser(admin!.id)).rejects.toThrow("last administrator");
     });
+
+    it("deleting a lecturer cascades their sessions' attendance records", async () => {
+      const lecId = await repo.createUser({
+        name: "Temp Lecturer",
+        email: "temp-lec@slams.edu",
+        password: "temp-pass-1",
+        role: "lecturer",
+        staffId: "STF-TMP",
+      });
+      const depts = await repo.listDepartments();
+      const c = await repo.createCourse({
+        code: "TMP 101",
+        title: "Temporary Course",
+        departmentId: depts[0].id,
+        level: "100",
+        units: 1,
+      });
+      await repo.assignLecturer(c.id, lecId);
+      const ada = await repo.getUserByEmail(DEMO.student);
+      await repo.setEnrollments(c.id, [ada!.id]);
+      const s = await repo.startSession({
+        courseId: c.id,
+        lecturerId: lecId,
+        durationMinutes: 15,
+      });
+      await repo.submitAttendance({ code: s.code, studentId: ada!.id });
+
+      await repo.deleteUser(lecId);
+
+      const rec = shim.raw
+        .prepare("SELECT COUNT(*) AS c FROM attendance_records WHERE course_id = ?")
+        .get(c.id) as { c: number };
+      expect(rec.c).toBe(0);
+      const sess = shim.raw
+        .prepare("SELECT COUNT(*) AS c FROM sessions WHERE course_id = ?")
+        .get(c.id) as { c: number };
+      expect(sess.c).toBe(0);
+      // Percentages stay sane (no orphan records ÷ zero sessions).
+      const report = await repo.courseReport(c.id);
+      expect(report!.totalSessions).toBe(0);
+      expect(report!.students[0].attended).toBe(0);
+      await repo.deleteCourse(c.id);
+    });
+
+    it("partial user updates preserve existing fields", async () => {
+      const ada = await repo.getUserByEmail(DEMO.student);
+      await repo.updateStudent(ada!.id, { name: "Ada Obi (edited)", email: DEMO.student });
+      const after = await repo.getUser(ada!.id);
+      expect(after!.name).toBe("Ada Obi (edited)");
+      expect(after!.matricNo).toBe(ada!.matricNo);
+      expect(after!.departmentId).toBe(ada!.departmentId);
+      expect(after!.level).toBe(ada!.level);
+
+      // An explicit "" department means "unassigned" → NULL.
+      await repo.updateStudent(ada!.id, {
+        name: ada!.name,
+        email: ada!.email,
+        departmentId: "",
+      });
+      expect((await repo.getUser(ada!.id))!.departmentId).toBeUndefined();
+
+      // Restore the demo row for the remaining suites.
+      await repo.updateStudent(ada!.id, {
+        name: ada!.name,
+        email: ada!.email,
+        matricNo: ada!.matricNo,
+        departmentId: ada!.departmentId,
+        level: ada!.level,
+      });
+
+      const lec = await repo.getUserByEmail(DEMO.lecturer);
+      await repo.updateLecturer(lec!.id, { name: "Dr. A. Yusuf (edited)", email: DEMO.lecturer });
+      const lecAfter = await repo.getUser(lec!.id);
+      expect(lecAfter!.staffId).toBe(lec!.staffId);
+      expect(lecAfter!.departmentId).toBe(lec!.departmentId);
+      await repo.updateLecturer(lec!.id, { name: lec!.name, email: lec!.email });
+    });
   });
 
   describe("departments", () => {

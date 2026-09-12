@@ -16,6 +16,9 @@ export default defineConfig({
       target: "react",
       routesDirectory: "./src/routes",
       generatedRouteTree: "./src/routeTree.gen.ts",
+      // Split each route into its own lazy chunk so students never download
+      // the admin analytics bundle (recharts) and vice versa.
+      autoCodeSplitting: true,
     }),
     react(),
     tailwindcss(),

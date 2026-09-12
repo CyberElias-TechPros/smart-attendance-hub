@@ -9,21 +9,64 @@
       content="Digital lecture attendance for universities: QR-code sign-in, live sessions, GPS verification, automatic attendance percentages, and instant PDF/Excel reports."
     />
     <meta name="author" content="SLAMS" />
-    <meta name="theme-color" content="#0f5c4b" />
+    <meta name="theme-color" content="#0f5c4b" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0d2921" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Social previews. Per-route <head> entries (TanStack Router) override
+         these for app screens, which are noindexed. (No static canonical tag:
+         the production domain is only known at deploy time, and Vite treats
+         link hrefs as bundleable assets.) -->
+    <meta property="og:site_name" content="SLAMS" />
     <meta property="og:title" content="SLAMS — Smart Lecture Attendance Management" />
     <meta
       property="og:description"
       content="Replace paper attendance sheets with secure QR-code sign-in, live sessions, and instant reports."
     />
     <meta property="og:type" content="website" />
+    <meta property="og:image" content="/og-image.png" />
+    <meta property="og:image:alt" content="SLAMS live attendance session with QR sign-in" />
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="SLAMS — Smart Lecture Attendance Management" />
+    <meta
+      name="twitter:description"
+      content="Secure QR-code lecture sign-in, live sessions, GPS verification, and instant PDF/Excel reports."
+    />
+    <meta name="twitter:image" content="/og-image.png" />
     <link rel="icon" href="/favicon.ico" type="image/x-icon" />
+    <link rel="apple-touch-icon" href="/favicon.ico" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@500&display=swap"
       rel="stylesheet"
     />
+    <!-- Apply the saved theme before first paint (prevents a light-flash for
+         dark-mode users). Mirrors the logic in ThemeToggle.tsx.
+         WARNING: this exact script is allow-listed by a SHA-256 hash in
+         vercel.json's Content-Security-Policy — if you edit it, recompute the
+         hash or production CSP will block the script. -->
+    <script>
+      try {
+        var t = localStorage.getItem("slams-theme");
+        if (t !== "light" && t !== "dark") {
+          t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        }
+        if (t === "dark") document.documentElement.classList.add("dark");
+      } catch (e) {
+        /* storage unavailable — stay on light */
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "SLAMS — Smart Lecture Attendance Management",
+        "applicationCategory": "EducationalApplication",
+        "operatingSystem": "Web",
+        "description": "Digital lecture attendance for universities: QR-code sign-in, live sessions, GPS verification, automatic attendance percentages, and instant PDF/Excel reports.",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

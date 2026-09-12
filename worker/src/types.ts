@@ -196,6 +196,6 @@ export interface OpenSession {
   courseId: string;
   courseCode: string;
   courseTitle: string;
-  code: string;
+  /** Sign-in code is intentionally absent — see listOpenSessionsForStudent. */
   expiresAt: number;
 }

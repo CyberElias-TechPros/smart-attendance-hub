@@ -107,21 +107,24 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     onUnauthorized?.();
   }
 
-  let payload: ErrorBody | null = null;
+  // NOTE: the body can only be consumed once — parse it a single time and
+  // reuse the parsed payload for both the error and success paths.
+  let payload: unknown = null;
   try {
-    payload = (await res.json()) as ErrorBody | null;
+    payload = (await res.json()) as unknown;
   } catch {
     payload = null;
   }
 
   if (!res.ok) {
+    const err = (payload as ErrorBody | null)?.error;
     throw new ApiError(
       res.status,
-      payload?.error?.code ?? "error",
-      payload?.error?.message ?? `Request failed (${res.status})`,
+      err?.code ?? "error",
+      err?.message ?? `Request failed (${res.status})`,
     );
   }
-  return (await res.json()) as T;
+  return payload as T;
 }
 
 const qs = (params: Record<string, string | undefined>) => {

@@ -11,6 +11,9 @@ const nav: NavItem[] = [
 ];
 
 export const Route = createFileRoute("/lecturer")({
+  head: () => ({
+    meta: [{ name: "robots", content: "noindex, nofollow" }, { title: "Lecturer — SLAMS" }],
+  }),
   beforeLoad: async ({ context }) => {
     const user = await requireRole(context, "lecturer");
     return { user };

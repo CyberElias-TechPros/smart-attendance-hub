@@ -1,2 +1,10 @@
 User-agent: *
-Allow: /
+Allow: /$
+Allow: /login$
+Disallow: /admin
+Disallow: /lecturer
+Disallow: /student
+Disallow: /settings
+Disallow: /api/
+
+Sitemap: /sitemap.xml

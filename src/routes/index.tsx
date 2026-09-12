@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useEffect, useRef } from "react";
 import {
   ArrowRight,
   QrCode,
@@ -120,6 +121,25 @@ function Header({ institutionName }: { institutionName: string }) {
 }
 
 function Hero({ showFakeStats }: { showFakeStats: boolean }) {
+  // The hero mock session renders a REAL, scannable QR (same encoder the
+  // lecturer dashboard uses) so visitors can try the flow with their phone.
+  const qrRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    if (!qrRef.current) return;
+    const canvas = qrRef.current;
+    // Lazy: keep the encoder out of the landing chunk (loads in parallel).
+    void import("qrcode")
+      .then(({ default: QRCode }) =>
+        QRCode.toCanvas(canvas, `${window.location.origin}/student/attend?code=483902`, {
+          width: 176,
+          margin: 1,
+          color: { dark: "#122b23", light: "#ffffff" },
+        }),
+      )
+      .catch(() => {
+        /* decorative if canvas fails */
+      });
+  }, []);
   return (
     <AuroraBackground className="bg-hero-gradient">
       <section className="relative mx-auto grid max-w-6xl items-center gap-16 px-6 py-20 md:grid-cols-2 md:py-28">

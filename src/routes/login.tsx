@@ -14,6 +14,15 @@ import { AuroraBackground, Orb } from "@/components/Background";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
 export const Route = createFileRoute("/login")({
+  head: () => ({
+    meta: [
+      { title: "Sign in — SLAMS" },
+      {
+        name: "description",
+        content: "Sign in to your SLAMS attendance workspace.",
+      },
+    ],
+  }),
   beforeLoad: async ({ context }) => {
     const user = await loadCurrentUser(context);
     if (user) throw redirect({ to: roleHome(user.role) });

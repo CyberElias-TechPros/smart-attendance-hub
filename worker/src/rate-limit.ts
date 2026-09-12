@@ -25,6 +25,13 @@ export class FixedWindowLimiter {
     return w.count <= limit;
   }
 
+  /** Returns true when the next hit would be allowed, WITHOUT recording a hit. */
+  peek(key: string, limit: number, now = Date.now()): boolean {
+    const w = this.windows.get(key);
+    if (!w || w.resetAt <= now) return true;
+    return w.count < limit;
+  }
+
   /** Prune expired windows once the map grows (keeps memory bounded). */
   maybePrune(now = Date.now()): void {
     if (this.windows.size < this.maxEntries) return;
