@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useSuspenseQuery, useQuery, useQueryClient, queryOptions } from "@tanstack/react-query";
-import { courses, sessions } from "@/lib/api";
+import { courses as coursesApi, sessions, schedules } from "@/lib/api";
 import { courseReportQO, lecturerCoursesQO } from "@/lib/queries";
 import { PageHeader } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,7 @@ import { FileDown, FileSpreadsheet } from "lucide-react";
 import { CourseGlyph } from "@/lib/courseIcons";
 import { useAtRiskThreshold, useSiteSettings } from "@/lib/useSiteSettings";
 import { burstCelebrate } from "@/lib/confetti";
+import { SchedulePanel } from "@/components/SchedulePanel";
 
 export const Route = createFileRoute("/lecturer/courses/$courseId")({
   beforeLoad: async ({ context }) => {
@@ -43,7 +44,7 @@ export const Route = createFileRoute("/lecturer/courses/$courseId")({
 const courseSessionsQO = (courseId: string) =>
   queryOptions({
     queryKey: ["lecturer-sessions", courseId],
-    queryFn: () => courses.sessions(courseId),
+    queryFn: () => coursesApi.sessions(courseId),
     enabled: Boolean(courseId),
   });
 
@@ -67,6 +68,11 @@ function CourseDetailPage() {
   const [radius, setRadius] = useState(150);
   const [rotate, setRotate] = useState(true);
   const [intervalSec, setIntervalSec] = useState(60);
+  const [autoEnd, setAutoEnd] = useState(true);
+  const [seats, setSeats] = useState<number | undefined>(undefined);
+  const [pinVenue, setPinVenue] = useState<boolean>(
+    () => course?.venueLat == null && course?.venueLng == null && course?.venueRadius == null,
+  );
   const [starting, setStarting] = useState(false);
 
   const openSession = sessionsQ.data?.find((s) => !s.endedAt && s.expiresAt > Date.now());
@@ -104,7 +110,10 @@ function CourseDetailPage() {
     setStarting(true);
     try {
       let coords: { latitude?: number; longitude?: number; radiusMeters?: number } = {};
-      if (useGeo) {
+      const courseHasVenue =
+        course && course.venueLat != null && course.venueLng != null && course.venueRadius != null;
+      const needGps = useGeo && !courseHasVenue;
+      if (needGps) {
         let pos: GeolocationPosition;
         try {
           pos = await new Promise<GeolocationPosition>((resolve, reject) =>
@@ -124,12 +133,27 @@ function CourseDetailPage() {
           longitude: pos.coords.longitude,
           radiusMeters: radius,
         };
+        // Persist this as the course's recurring venue so future sessions are
+        // locked too (admins/lecturers can clear it later).
+        if (pinVenue) {
+          try {
+            await coursesApi.setVenue(courseId, {
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+              radiusMeters: radius,
+            });
+          } catch {
+            /* best-effort; the session still starts with this geofence */
+          }
+        }
       }
       const s = await sessions.start({
         courseId,
         durationMinutes: duration,
         topic: topic || undefined,
         codeIntervalSeconds: rotate ? intervalSec : null,
+        autoEndEnabled: autoEnd,
+        seats: seats && seats > 0 ? seats : undefined,
         ...coords,
       });
       toast.success("Session started");
@@ -253,6 +277,47 @@ function CourseDetailPage() {
                     onChange={(e) => setDuration(Number(e.target.value))}
                   />
                 </div>
+                <div className="space-y-1.5">
+                  <Label>Seat capacity (optional)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={10000}
+                    placeholder="Unlimited"
+                    value={seats ?? ""}
+                    onChange={(e) =>
+                      setSeats(e.target.value === "" ? undefined : Number(e.target.value))
+                    }
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    Leave empty for no limit; latecomers are told when the room is full.
+                  </p>
+                </div>
+                <div className="flex items-start justify-between gap-3 rounded-xl border border-border/60 p-3">
+                  <div className="flex items-start gap-2">
+                    <RefreshCw className="mt-0.5 h-4 w-4 text-muted-foreground" />
+                    <div>
+                      <div className="text-sm font-medium">Auto-close on time</div>
+                      <div className="text-xs text-muted-foreground">
+                        The session stops accepting sign-ins when its clock ends.
+                      </div>
+                    </div>
+                  </div>
+                  <Switch checked={autoEnd} onCheckedChange={setAutoEnd} />
+                </div>
+                {course.venueLat != null &&
+                  course.venueLng != null &&
+                  course.venueRadius != null && (
+                    <div className="rounded-xl border border-primary/25 bg-primary/5 p-3 text-xs text-primary">
+                      <span className="inline-flex items-center gap-1.5 font-semibold">
+                        <MapPin className="h-3.5 w-3.5" /> Course venue pinned
+                      </span>
+                      <p className="mt-1 text-primary/80">
+                        Sessions for this course are GPS-locked to a ±{course.venueRadius}m venue —
+                        students can't sign in from elsewhere.
+                      </p>
+                    </div>
+                  )}
                 <div className="flex items-start justify-between gap-3 rounded-xl border border-border/60 p-3">
                   <div className="flex items-start gap-2">
                     <MapPin className="mt-0.5 h-4 w-4 text-muted-foreground" />
@@ -265,6 +330,16 @@ function CourseDetailPage() {
                   </div>
                   <Switch checked={useGeo} onCheckedChange={setUseGeo} />
                 </div>
+                {useGeo && course.venueLat == null && (
+                  <div className="flex items-start justify-between gap-3 rounded-xl border border-border/60 p-3">
+                    <div className="text-xs text-muted-foreground">
+                      <div className="font-medium text-foreground">Remember as course venue</div>
+                      Pin this room as the standing venue, so every future session for this course
+                      is GPS-locked automatically.
+                    </div>
+                    <Switch checked={pinVenue} onCheckedChange={setPinVenue} />
+                  </div>
+                )}
                 {useGeo && (
                   <div className="space-y-1.5">
                     <Label>Radius (meters)</Label>
@@ -324,6 +399,8 @@ function CourseDetailPage() {
         </div>
 
         <div className="lg:col-span-2 space-y-6">
+          <SchedulePanel courseId={course.id} />
+
           <div className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
             <div className="flex items-center justify-between">
               <h2 className="font-display text-lg font-semibold">Student attendance</h2>

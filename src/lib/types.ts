@@ -13,6 +13,9 @@ export interface User {
   departmentId?: string;
   level?: string;
   createdAt: number;
+  /** Bumped when the account is signed out on all devices / password changed.
+   *  Tokens carrying a stale value are rejected (server-side revocation). */
+  authVersion: number;
 }
 
 export interface Department {
@@ -36,6 +39,10 @@ export interface Course {
   color?: string;
   category?: string;
   description?: string;
+  /** Course-level default venue geofence (sessions inherit it). */
+  venueLat?: number;
+  venueLng?: number;
+  venueRadius?: number;
 }
 
 export interface AttendanceSession {
@@ -53,7 +60,13 @@ export interface AttendanceSession {
   codeIntervalSeconds?: number;
   codeUpdatedAt?: number;
   prevCode?: string;
+  /** When true (default) the session closes itself at expires_at. */
+  autoEndEnabled: boolean;
+  /** Venue capacity; undefined = unlimited. */
+  seats?: number;
 }
+
+export type AttendanceStatus = "present" | "late" | "excused" | "absent";
 
 export interface Testimonial {
   name: string;
@@ -94,6 +107,17 @@ export interface StudentCourseView extends Course {
   percentage: number;
 }
 
+/** Sign-in forensics surfaced to the lecturer on the live-session view. */
+export interface SignInEvidence {
+  ip?: string;
+  ua?: string;
+  colo?: string;
+  distanceMeters?: number;
+  netMeters?: number;
+  hashPresent: boolean;
+  class: "verified" | "unverified" | "unlocated";
+}
+
 export interface SessionDetail {
   session: AttendanceSession;
   course: Course;
@@ -107,6 +131,8 @@ export interface SessionDetail {
     timestamp: number;
     deviceId?: string;
     distanceMeters?: number;
+    status: AttendanceStatus;
+    evidence?: SignInEvidence;
   }>;
 }
 
@@ -125,6 +151,30 @@ export interface StudentCourseSession {
   topic?: string;
   attended: boolean;
   attendedAt?: number;
+  status: AttendanceStatus;
+}
+
+export interface Schedule {
+  id: string;
+  courseId: string;
+  lecturerId: string;
+  durationMinutes: number;
+  topic?: string;
+  latitude?: number;
+  longitude?: number;
+  radiusMeters?: number;
+  codeIntervalSeconds?: number;
+  seats?: number;
+  recurrence: string;
+  daysMask: string;
+  minuteOfDay: number;
+  tzOffsetMinutes: number;
+  endsOn?: number;
+  maxOccurrences?: number;
+  occurrences: number;
+  lastStartAt: number;
+  enabled: boolean;
+  createdAt: number;
 }
 
 export interface CourseReportStudent {

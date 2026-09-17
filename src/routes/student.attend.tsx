@@ -76,10 +76,16 @@ function AttendPage() {
           );
           coords = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
         } catch {
-          /* geo unavailable, proceed without */
+          /* GPS unavailable — the server falls back to its network-location
+             check for venue-locked sessions, or refuses with a reason. */
         }
       }
-      const r = await student.submitAttendance({ code: c, ...coords, deviceId: getDeviceId() });
+      const r = await student.submitAttendance({
+        code: c,
+        ...coords,
+        deviceId: getDeviceId(),
+        clientTime: Date.now(),
+      });
       setResult(r);
       burstSuccess();
       toast.success("Attendance recorded");

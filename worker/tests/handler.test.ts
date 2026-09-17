@@ -462,6 +462,135 @@ describe("worker handler (integration)", () => {
     await h.call("POST", `/api/sessions/${created.id}/end`, { token: lecturerToken });
   });
 
+  it("slides the session forward via /auth/refresh", async () => {
+    const before = await h.login("lecturer@slams.edu");
+    const tok = tokenOf(before.json);
+    const res = await h.call("POST", "/api/auth/refresh", { token: tok });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { token: string; expiresInSeconds: number };
+    expect(body.token).toBeTruthy();
+    expect(body.expiresInSeconds).toBe(7 * 24 * 60 * 60);
+    // The refreshed token still authenticates.
+    const me = await h.call("GET", "/api/auth/me", { token: body.token });
+    expect(me.status).toBe(200);
+  });
+
+  it("login reports the session lifetime", async () => {
+    const res = await h.login("student@slams.edu", "password123", "203.0.113.31");
+    expect(res.status).toBe(200);
+    expect((res.json as { expiresInSeconds?: number }).expiresInSeconds).toBe(7 * 24 * 60 * 60);
+  });
+
+  it("creates, lists, toggles and deletes a recurring schedule", async () => {
+    const create = await h.call("POST", "/api/schedules", {
+      token: lecturerToken,
+      body: {
+        courseId: courseA.id,
+        durationMinutes: 15,
+        recurrence: "weekly",
+        days: [1, 2, 3, 4, 5],
+        minuteOfDay: 9 * 60,
+        tzOffsetMinutes: 60,
+        maxOccurrences: 5,
+      },
+    });
+    expect(create.status).toBe(201);
+    const sched = (await create.json()) as { id: string; occurrences: number };
+    expect(sched.id).toBeTruthy();
+
+    const list = await h.call("GET", "/api/schedules", { token: lecturerToken });
+    expect(list.status).toBe(200);
+    expect(((await list.json()) as Array<{ id: string }>).some((s) => s.id === sched.id)).toBe(
+      true,
+    );
+
+    // Another lecturer cannot toggle my schedule.
+    const forbidden = await h.call("PATCH", `/api/schedules/${sched.id}/enabled`, {
+      token: await tokenFor("second@slams.edu", "second-pass-1"),
+      body: { enabled: false },
+    });
+    expect(forbidden.status).toBe(403);
+
+    const dis = await h.call("PATCH", `/api/schedules/${sched.id}/enabled`, {
+      token: lecturerToken,
+      body: { enabled: false },
+    });
+    expect(dis.status).toBe(200);
+
+    const del = await h.call("DELETE", `/api/schedules/${sched.id}`, {
+      token: lecturerToken,
+    });
+    expect(del.status).toBe(200);
+  });
+
+  it("lets a lecturer claim an unassigned course in their department", async () => {
+    // The demo lecturer's department has unassigned courses? Not by default —
+    // create one, then claim it.
+    const depts = (await (
+      await h.call("GET", "/api/departments", { token: adminToken })
+    ).json()) as Array<{ id: string; code: string }>;
+    const csc = depts.find((d) => d.code === "CSC")!;
+    const made = await h.call("POST", "/api/courses", {
+      token: adminToken,
+      body: { code: "CSC 999", title: "Claim Me", departmentId: csc.id, level: "400", units: 2 },
+    });
+    const course = (await made.json()) as { id: string };
+    expect(made.status).toBe(201);
+
+    const feed = await h.call("GET", "/api/lecturer/unassigned-courses", {
+      token: lecturerToken,
+    });
+    expect(feed.status).toBe(200);
+    expect(((await feed.json()) as Array<{ id: string }>).some((c) => c.id === course.id)).toBe(
+      true,
+    );
+
+    const claim = await h.call("POST", "/api/lecturer/claim-course", {
+      token: lecturerToken,
+      body: { courseId: course.id },
+    });
+    expect(claim.status).toBe(200);
+    expect(((await claim.json()) as { lecturerId?: string }).lecturerId).toBeTruthy();
+
+    await h.call("DELETE", `/api/courses/${course.id}`, { token: adminToken });
+  });
+
+  it("excuses an attendance record via the status endpoint", async () => {
+    const start = await h.call("POST", "/api/sessions", {
+      token: lecturerToken,
+      body: { courseId: courseA.id, durationMinutes: 10 },
+    });
+    const session = (await start.json()) as { id: string; code: string };
+
+    await h.call("POST", "/api/attendance", {
+      token: studentToken,
+      body: { code: session.code, deviceId: "status-device" },
+    });
+
+    const detail = await h.call("GET", `/api/sessions/${session.id}`, {
+      token: lecturerToken,
+    });
+    const d = (await detail.json()) as {
+      attendance: Array<{ id: string; status: string }>;
+    };
+    expect(d.attendance.length).toBe(1);
+    expect(d.attendance[0].status).toBe("present");
+
+    const set = await h.call("PATCH", `/api/attendance/${d.attendance[0].id}/status`, {
+      token: lecturerToken,
+      body: { status: "excused" },
+    });
+    expect(set.status).toBe(200);
+
+    const detail2 = await h.call("GET", `/api/sessions/${session.id}`, {
+      token: lecturerToken,
+    });
+    const d2 = (await detail2.json()) as { attendance: Array<{ id: string; status: string }> };
+    expect(d2.attendance[0].status).toBe("excused");
+
+    await h.call("POST", `/api/sessions/${session.id}/end`, { token: lecturerToken });
+  });
+
   it("profile self-update works for admins (previously broken)", async () => {
     const res = await h.call("PATCH", "/api/users/profile", {
       token: adminToken,

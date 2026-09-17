@@ -45,7 +45,12 @@ describe("session tokens", () => {
   it("signs and verifies a session", async () => {
     const token = await signSession({ sub: "user-1", role: "student", name: "Ada Obi" }, ENV);
     const payload = await verifySession(token, ENV);
-    expect(payload).toEqual({ sub: "user-1", role: "student", name: "Ada Obi" });
+    expect(payload).toEqual({ sub: "user-1", role: "student", name: "Ada Obi", v: 1 });
+  });
+
+  it("carries the auth version for server-side revocation", async () => {
+    const token = await signSession({ sub: "user-1", role: "admin", name: "Admin", v: 7 }, ENV);
+    expect((await verifySession(token, ENV))?.v).toBe(7);
   });
 
   it("rejects a token signed with a different secret", async () => {
