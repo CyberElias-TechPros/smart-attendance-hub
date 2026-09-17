@@ -45,6 +45,11 @@ export const lecturerCoursesQO = queryOptions({
   queryFn: () => courses.lecturer(),
 });
 
+export const unassignedCoursesQO = queryOptions({
+  queryKey: ["lecturer", "unassigned-courses"],
+  queryFn: () => courses.unassigned(),
+});
+
 export const studentCoursesQO = queryOptions({
   queryKey: ["student", "courses"],
   queryFn: () => student.courses(),

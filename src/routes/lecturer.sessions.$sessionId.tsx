@@ -18,6 +18,14 @@ import QRCode from "qrcode";
 import { toast } from "sonner";
 import { burstCelebrate } from "@/lib/confetti";
 import { shortDeviceId } from "@/lib/device";
+import type { AttendanceStatus, SignInEvidence } from "@/lib/types";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 export const Route = createFileRoute("/lecturer/sessions/$sessionId")({
   component: LiveSessionPage,
@@ -95,6 +103,15 @@ function LiveSessionPage() {
     try {
       await sessions.removeAttendance(recordId);
       toast.success("Attendance removed");
+      qc.invalidateQueries({ queryKey: ["session-detail", sessionId] });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed");
+    }
+  };
+
+  const setStatus = async (recordId: string, status: AttendanceStatus) => {
+    try {
+      await sessions.setAttendanceStatus(recordId, status);
       qc.invalidateQueries({ queryKey: ["session-detail", sessionId] });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
@@ -193,6 +210,7 @@ function LiveSessionPage() {
                   </TableHead>
                   <TableHead title="Device used to sign in">Device</TableHead>
                   <TableHead className="text-right">Time</TableHead>
+                  <TableHead>Status</TableHead>
                   <TableHead className="w-10" />
                 </TableRow>
               </TableHeader>
@@ -205,7 +223,7 @@ function LiveSessionPage() {
                     <TableCell className="font-medium">{a.name}</TableCell>
                     <TableCell className="font-mono text-xs">{a.matricNo}</TableCell>
                     <TableCell className="text-right font-mono text-xs text-muted-foreground">
-                      {a.distanceMeters != null ? `${a.distanceMeters}m` : "—"}
+                      <EvidenceChip evidence={a.evidence} />
                     </TableCell>
                     <TableCell
                       className="font-mono text-xs text-muted-foreground"
@@ -215,6 +233,9 @@ function LiveSessionPage() {
                     </TableCell>
                     <TableCell className="text-right font-mono text-xs">
                       {new Date(a.timestamp).toLocaleTimeString()}
+                    </TableCell>
+                    <TableCell>
+                      <StatusSelect value={a.status} onChange={(v) => setStatus(a.id, v)} />
                     </TableCell>
                     <TableCell className="text-right">
                       <Button
@@ -231,7 +252,7 @@ function LiveSessionPage() {
                 ))}
                 {attendance.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                    <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
                       Waiting for the first sign-in…
                     </TableCell>
                   </TableRow>
@@ -242,6 +263,79 @@ function LiveSessionPage() {
         </div>
       </div>
     </>
+  );
+}
+
+/** Location-verification coloring for a sign-in row:
+ *  - GPS distance available → emerald "on-site"
+ *  - network (Cloudflare city) distance → amber "net-verified"
+ *  - no location ever recorded → slate "unlocated"
+ *  The lecturer sees the classification, the distance and the country/colo
+ *  hint in one hover tooltip. */
+function EvidenceChip({ evidence }: { evidence?: SignInEvidence }) {
+  if (!evidence) return <span title="Recorded before location forensics">—</span>;
+  if (evidence.class === "verified") {
+    const d = evidence.distanceMeters ?? evidence.netMeters;
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-success cursor-help"
+        title={
+          evidence.distanceMeters != null
+            ? `${evidence.distanceMeters}m from venue (GPS)`
+            : `~${evidence.netMeters ?? 0}m from venue (network)`
+        }
+      >
+        {d != null ? `${d}m` : "on-site"} ✓
+      </span>
+    );
+  }
+  if (evidence.class === "unverified") {
+    return (
+      <span
+        className="cursor-help text-warning"
+        title="Signed attestation stored, but no location was recorded for this session"
+      >
+        attested
+      </span>
+    );
+  }
+  return (
+    <span className="cursor-help text-muted-foreground" title="No location recorded">
+      unlocated
+    </span>
+  );
+}
+
+const STATUSES: Array<{ value: AttendanceStatus; label: string; className: string }> = [
+  { value: "present", label: "Present", className: "text-success" },
+  { value: "late", label: "Late", className: "text-warning" },
+  { value: "excused", label: "Excused", className: "text-accent" },
+  { value: "absent", label: "Absent", className: "text-destructive" },
+];
+
+function StatusSelect({
+  value,
+  onChange,
+}: {
+  value: AttendanceStatus;
+  onChange: (v: AttendanceStatus) => void;
+}) {
+  const current = STATUSES.find((s) => s.value === value) ?? STATUSES[0];
+  return (
+    <Select value={value} onValueChange={(v) => onChange(v as AttendanceStatus)}>
+      <SelectTrigger
+        className={`h-8 w-28 border-0 bg-transparent px-2 font-medium ${current.className}`}
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {STATUSES.map((s) => (
+          <SelectItem key={s.value} value={s.value}>
+            {s.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 

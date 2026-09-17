@@ -5,6 +5,7 @@ import { RouterProvider, createRouter } from "@tanstack/react-router";
 
 import { routeTree } from "./routeTree.gen";
 import { handleUnauthorized } from "@/lib/api";
+import "./styles.css";
 
 const queryClient = new QueryClient({
   defaultOptions: {

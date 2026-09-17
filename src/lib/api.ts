@@ -12,6 +12,7 @@
 import type {
   AdminOverview,
   AttendanceSession,
+  AttendanceStatus,
   Course,
   CourseReport,
   Department,
@@ -19,6 +20,7 @@ import type {
   OpenSession,
   PublicSettings,
   Role,
+  Schedule,
   SessionDetail,
   SiteSettings,
   StudentCourseSession,
@@ -32,6 +34,7 @@ import type {
 export const API_URL: string = (import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "");
 
 const TOKEN_KEY = "slams.token";
+const TOKEN_EXPIRES_KEY = "slams.token.expiresAt";
 
 export function getToken(): string | null {
   try {
@@ -40,16 +43,28 @@ export function getToken(): string | null {
     return null;
   }
 }
-export function setToken(token: string): void {
+export function setToken(token: string, expiresInSeconds?: number): void {
   try {
     localStorage.setItem(TOKEN_KEY, token);
+    if (expiresInSeconds) {
+      localStorage.setItem(TOKEN_EXPIRES_KEY, String(Date.now() + expiresInSeconds * 1000));
+    }
   } catch {
     /* private mode — session won't persist, still works in-memory */
+  }
+}
+export function getTokenExpiresAt(): number | null {
+  try {
+    const v = localStorage.getItem(TOKEN_EXPIRES_KEY);
+    return v ? Number(v) : null;
+  } catch {
+    return null;
   }
 }
 export function clearToken(): void {
   try {
     localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(TOKEN_EXPIRES_KEY);
   } catch {
     /* ignore */
   }
@@ -82,6 +97,9 @@ interface RequestOptions {
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  // Slide the session forward before it expires (no-op most of the time).
+  if (path !== "/api/auth/login") void tryRefresh();
+
   const headers: Record<string, string> = {};
   if (options.body !== undefined) headers["content-type"] = "application/json";
   const token = getToken();
@@ -136,17 +154,53 @@ const qs = (params: Record<string, string | undefined>) => {
 
 // ─── Auth ──────────────────────────────────────────────────────────────────
 
+/** Re-signs a still-valid session (rolling session) so a student mid-lecture
+ *  never hits an expired token. Silent no-op on failure — the next request
+ *  handles auth normally. */
+async function tryRefresh(): Promise<void> {
+  try {
+    const token = getToken();
+    const expiresAt = getTokenExpiresAt();
+    if (!token || !expiresAt) return;
+    // Refresh in the last 25% of the token's life (or when already "expired"
+    // by our tracked clock but still accepted by jose's grace-less check).
+    if (Date.now() < expiresAt - 0.25 * (7 * 24 * 60 * 60 * 1000)) return;
+
+    const res = await fetch(`${API_URL}/api/auth/refresh`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (res.ok) {
+      const body = (await res.json()) as { token: string; expiresInSeconds?: number };
+      setToken(body.token, body.expiresInSeconds);
+    } else if (res.status === 401) {
+      clearToken();
+      onUnauthorized?.();
+    }
+  } catch {
+    /* network hiccup — let the main request surface it */
+  }
+}
+
 export const auth = {
   async login(email: string, password: string): Promise<User> {
-    const { token, user } = await request<{ token: string; user: User }>("/api/auth/login", {
+    const { token, expiresInSeconds, user } = await request<{
+      token: string;
+      expiresInSeconds?: number;
+      user: User;
+    }>("/api/auth/login", {
       method: "POST",
       body: { email, password },
     });
-    setToken(token);
+    setToken(token, expiresInSeconds);
     return user;
   },
   logout: () => request<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
   me: () => request<User>("/api/auth/me"),
+  refresh: () =>
+    request<{ token: string; expiresInSeconds: number }>("/api/auth/refresh", {
+      method: "POST",
+    }),
 };
 
 // ─── Users (admin) ────────────────────────────────────────────────────────
@@ -206,11 +260,21 @@ export interface CourseInput {
   color?: string;
   category?: string;
   description?: string;
+  venueLat?: number;
+  venueLng?: number;
+  venueRadius?: number;
+  clearVenue?: boolean;
 }
 
 export const courses = {
   list: () => request<Course[]>("/api/courses"),
   lecturer: () => request<Course[]>("/api/lecturer/courses"),
+  unassigned: () => request<Course[]>("/api/lecturer/unassigned-courses"),
+  claim: (courseId: string) =>
+    request<Course>("/api/lecturer/claim-course", {
+      method: "POST",
+      body: { courseId },
+    }),
   create: (input: CourseInput) => request<Course>("/api/courses", { method: "POST", body: input }),
   update: (id: string, input: CourseInput) =>
     request<{ ok: boolean }>(`/api/courses/${encodeURIComponent(id)}`, {
@@ -223,6 +287,14 @@ export const courses = {
     request<{ ok: boolean }>(`/api/courses/${encodeURIComponent(courseId)}/lecturer`, {
       method: "PATCH",
       body: { lecturerId },
+    }),
+  setVenue: (
+    courseId: string,
+    patch: { latitude?: number; longitude?: number; radiusMeters?: number; clear?: boolean },
+  ) =>
+    request<{ ok: boolean }>(`/api/courses/${encodeURIComponent(courseId)}/venue`, {
+      method: "PATCH",
+      body: patch,
     }),
   setEnrollments: (courseId: string, studentIds: string[]) =>
     request<{ ok: boolean }>(`/api/courses/${encodeURIComponent(courseId)}/enrollments`, {
@@ -244,6 +316,8 @@ export const sessions = {
     longitude?: number;
     radiusMeters?: number;
     codeIntervalSeconds?: number | null;
+    seats?: number;
+    autoEndEnabled?: boolean;
   }) => request<AttendanceSession>("/api/sessions", { method: "POST", body: input }),
   detail: (sessionId: string) =>
     request<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}`),
@@ -253,6 +327,45 @@ export const sessions = {
     }),
   removeAttendance: (recordId: string) =>
     request<{ ok: boolean }>(`/api/attendance/${encodeURIComponent(recordId)}`, {
+      method: "DELETE",
+    }),
+  setAttendanceStatus: (recordId: string, status: AttendanceStatus) =>
+    request<{ ok: boolean }>(`/api/attendance/${encodeURIComponent(recordId)}/status`, {
+      method: "PATCH",
+      body: { status },
+    }),
+};
+
+// ─── Recurring schedules (lecturer) ────────────────────────────────────────
+
+export type ScheduleInput = {
+  courseId: string;
+  durationMinutes?: number;
+  topic?: string;
+  latitude?: number;
+  longitude?: number;
+  radiusMeters?: number;
+  codeIntervalSeconds?: number | null;
+  seats?: number;
+  recurrence: "daily" | "weekdays" | "weekly" | "custom";
+  days?: number[];
+  minuteOfDay: number;
+  tzOffsetMinutes?: number;
+  endsOn?: number;
+  maxOccurrences?: number;
+};
+
+export const schedules = {
+  list: (courseId?: string) => request<Schedule[]>(`/api/schedules${qs({ courseId })}`),
+  create: (input: ScheduleInput) =>
+    request<Schedule>("/api/schedules", { method: "POST", body: input }),
+  setEnabled: (id: string, enabled: boolean) =>
+    request<{ ok: boolean }>(`/api/schedules/${encodeURIComponent(id)}/enabled`, {
+      method: "PATCH",
+      body: { enabled },
+    }),
+  remove: (id: string) =>
+    request<{ ok: boolean }>(`/api/schedules/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }),
 };
@@ -270,6 +383,7 @@ export const student = {
     latitude?: number;
     longitude?: number;
     deviceId?: string;
+    clientTime?: number;
   }) =>
     request<{ course: { code: string; title: string }; timestamp: number }>("/api/attendance", {
       method: "POST",

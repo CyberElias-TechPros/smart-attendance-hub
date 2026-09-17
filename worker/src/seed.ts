@@ -31,9 +31,11 @@ export async function seedD1(db: D1Database): Promise<void> {
     color: "oklch(0.55 0.16 200)",
   };
 
+  // INSERT OR IGNORE so seeding is safe under multi-isolate concurrency (two
+  // isolates can race the seed on first deploy; the second collapses silently).
   await db
     .prepare(
-      "INSERT INTO departments (id, name, code, icon, color) VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)",
+      "INSERT OR IGNORE INTO departments (id, name, code, icon, color) VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)",
     )
     .bind(
       csc.id,
@@ -121,7 +123,7 @@ export async function seedD1(db: D1Database): Promise<void> {
   for (const u of users) {
     await db
       .prepare(
-        `INSERT INTO users (id, email, password_hash, name, role, matric_no, staff_id, department_id, level, created_at)
+        `INSERT OR IGNORE INTO users (id, email, password_hash, name, role, matric_no, staff_id, department_id, level, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
@@ -184,7 +186,7 @@ export async function seedD1(db: D1Database): Promise<void> {
   for (const c of [c1, c2, c3]) {
     await db
       .prepare(
-        "INSERT INTO courses (id, code, title, department_id, level, units, lecturer_id, icon, color, category, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO courses (id, code, title, department_id, level, units, lecturer_id, icon, color, category, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         c.id,
@@ -216,7 +218,7 @@ export async function seedD1(db: D1Database): Promise<void> {
     const code = String(100000 + Math.floor(Math.random() * 900000));
     await db
       .prepare(
-        "INSERT INTO sessions (id, course_id, lecturer_id, code, started_at, expires_at, ended_at, topic) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO sessions (id, course_id, lecturer_id, code, started_at, expires_at, ended_at, topic) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         sid,
@@ -233,7 +235,7 @@ export async function seedD1(db: D1Database): Promise<void> {
       if (Math.random() > 0.15) {
         await db
           .prepare(
-            "INSERT INTO attendance_records (id, session_id, student_id, course_id, timestamp) VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO attendance_records (id, session_id, student_id, course_id, timestamp) VALUES (?, ?, ?, ?, ?)",
           )
           .bind(id(10), sid, st, c1.id, started + Math.floor(Math.random() * 20 * 60 * 1000))
           .run();
@@ -243,7 +245,7 @@ export async function seedD1(db: D1Database): Promise<void> {
 
   await db
     .prepare(
-      `INSERT INTO site_settings (id, institution_name, at_risk_threshold, marquee_items, testimonials,
+      `INSERT OR IGNORE INTO site_settings (id, institution_name, at_risk_threshold, marquee_items, testimonials,
         demo_accounts_enabled, demo_password, demo_email_domain, show_fake_stats, primary_color, contact_email)
        VALUES ('site', 'SLAMS', 70, ?, ?, 1, 'password123', 'slams.edu', 1, NULL, NULL)`,
     )

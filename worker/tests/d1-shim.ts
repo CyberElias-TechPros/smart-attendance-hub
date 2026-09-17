@@ -39,8 +39,13 @@ export function createD1Shim(): D1Shim {
           return (r ?? null) as T | null;
         },
         async run(): Promise<{ success: boolean; meta: unknown }> {
-          stmt.run(...params);
-          return { success: true, meta: {} };
+          const res = stmt.run(...params);
+          return {
+            success: true,
+            // node:sqlite run() returns { changes, lastInsertRowid } — surface
+            // `changes` the way D1's meta does so callers can count affected rows.
+            meta: { changes: res.changes, last_row_id: res.lastInsertRowid },
+          };
         },
       };
       return self;

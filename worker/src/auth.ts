@@ -11,6 +11,9 @@ const enc = new TextEncoder();
 
 export const PBKDF2_ITERATIONS = 210_000;
 export const SESSION_TTL = "7d";
+/** Session lifetime in seconds — returned to clients so they can slide their
+ *  token before it expires mid-lecture. */
+export const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
 // Used only when no secret is configured (local dev). Never rely on this in
 // production — set the SLAMS_JWT_SECRET worker secret.
 const DEV_FALLBACK_SECRET = "slams-dev-secret-do-not-use-in-production-0123456789ab";
@@ -109,13 +112,21 @@ export interface SessionPayload {
   sub: string;
   role: Role;
   name: string;
+  /** users.auth_version at sign-in time — the server bumps this to revoke. */
+  v?: number;
 }
+
+export const SESSION_VERSION_CLAIM = "v";
 
 export async function signSession(
   payload: SessionPayload,
   env: { SLAMS_JWT_SECRET?: string },
 ): Promise<string> {
-  return await new SignJWT({ role: payload.role, name: payload.name })
+  return await new SignJWT({
+    role: payload.role,
+    name: payload.name,
+    [SESSION_VERSION_CLAIM]: payload.v ?? 1,
+  })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(payload.sub)
     .setIssuedAt()
@@ -132,7 +143,9 @@ export async function verifySession(
     if (!payload.sub || !payload.role) return null;
     const role = payload.role as Role;
     if (role !== "admin" && role !== "lecturer" && role !== "student") return null;
-    return { sub: String(payload.sub), role, name: String(payload.name ?? "") };
+    const vRaw = payload[SESSION_VERSION_CLAIM];
+    const v = typeof vRaw === "number" && Number.isFinite(vRaw) ? vRaw : undefined;
+    return { sub: String(payload.sub), role, name: String(payload.name ?? ""), v };
   } catch {
     return null;
   }
