@@ -22,7 +22,7 @@ ALLOWED_ORIGINS = ""
 [[d1_databases]]
 binding = "DB"
 database_name = "slams"
-database_id = "7ba50733-1f70-48ea-8d30-8c450e963c31"
+database_id = "6484419d-08c4-4690-b5ad-81a40e75cfcb"
 migrations_dir = "migrations"
 
 # Secrets (set with `npx wrangler secret put <NAME>` — never committed):
