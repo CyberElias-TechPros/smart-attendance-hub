@@ -1123,7 +1123,7 @@ interface ScheduledController {
 
 export default {
   // Cloudflare Cron Trigger entrypoint. Configure in wrangler.toml:
-  //   [triggers] crons = ["* * * * *"]
+  //   [triggers] crons = ["*/15 * * * *"]
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     await housekeeping(env);
   },

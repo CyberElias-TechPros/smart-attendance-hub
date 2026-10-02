@@ -29,12 +29,12 @@ migrations_dir = "migrations"
 #   SLAMS_JWT_SECRET   JWT signing secret (required in production).
 # A local dev value can be placed in .dev.vars (see .dev.vars.example).
 
-# Cron Trigger: once a minute, close expired sessions and materialize due
+# Cron Trigger: every 15 minutes, close expired sessions and materialize due
 # recurring-schedule legs (see the `scheduled()` handler in worker/src/index.ts).
 # Local dev and cron-less deployments still get the same behavior via the lazy
 # per-request housekeeping hook.
 [triggers]
-crons = ["* * * * *"]
+crons = ["*/15 * * * *"]
 
 [observability]
 enabled = true
