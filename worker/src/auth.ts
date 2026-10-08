@@ -9,7 +9,7 @@ import type { Role } from "./types";
 
 const enc = new TextEncoder();
 
-export const PBKDF2_ITERATIONS = 210_000;
+export const PBKDF2_ITERATIONS = 100_000;
 export const SESSION_TTL = "7d";
 /** Session lifetime in seconds — returned to clients so they can slide their
  *  token before it expires mid-lecture. */
