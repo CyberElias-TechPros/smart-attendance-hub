@@ -1,7 +1,7 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { useSuspenseQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useSuspenseQuery, useQueryClient } from "@tanstack/react-query";
 import { users } from "@/lib/api";
-import { deptsQO, loadCurrentUser } from "@/lib/queries";
+import { deptsQO, loadCurrentUser, myAccessQO } from "@/lib/queries";
 import { PageHeader } from "@/components/AppShell";
 import { Avatar } from "@/components/Avatar";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { useState } from "react";
 import { toast } from "sonner";
-import { KeyRound, UserCog, Mail, GraduationCap, Save } from "lucide-react";
+import { KeyRound, UserCog, Mail, GraduationCap, Save, ShieldCheck } from "lucide-react";
 import { RouteTransition } from "@/components/RouteTransition";
 
 export const Route = createFileRoute("/settings")({
@@ -30,6 +30,8 @@ export const Route = createFileRoute("/settings")({
 function SettingsPage() {
   const { user } = Route.useRouteContext();
   const { data: depts } = useSuspenseQuery(deptsQO);
+  // What this account may actually do — role first, capabilities on top (P5.2).
+  const { data: access } = useQuery(myAccessQO);
   const qc = useQueryClient();
   const [cur, setCur] = useState("");
   const [next, setNext] = useState("");
@@ -206,6 +208,41 @@ function SettingsPage() {
               form to keep your account safe.
             </p>
           </Card>
+          <div className="rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
+            <div className="flex items-center gap-2">
+              <div className="grid h-9 w-9 place-items-center rounded-lg bg-primary/10 text-primary">
+                <ShieldCheck className="h-4 w-4" />
+              </div>
+              <h2 className="font-display text-lg font-semibold">Your access</h2>
+            </div>
+            <p className="mt-3 text-sm text-muted-foreground">
+              {access?.role === "admin"
+                ? "You are an administrator: every report, export and setting is available to you."
+                : "Your role covers the courses assigned to you. Anything listed below was granted to you by an administrator."}
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {access && access.effective.length === 0 ? (
+                <span className="text-sm text-muted-foreground">
+                  No extra capabilities — your role is your access.
+                </span>
+              ) : null}
+              {(access?.effective ?? []).map((key) => {
+                const definition = access?.catalogue.find((c) => c.key === key);
+                return (
+                  <Badge key={key} variant="outline" title={definition?.description}>
+                    <KeyRound className="mr-1 h-3 w-3" />
+                    {definition?.label ?? key}
+                  </Badge>
+                );
+              })}
+            </div>
+            {access?.role === "admin" ? (
+              <p className="mt-4 text-xs text-muted-foreground">
+                Capabilities are edited on the{" "}
+                <span className="font-medium">Access &amp; roles</span> page.
+              </p>
+            ) : null}
+          </div>
         </div>
       </div>
     </RouteTransition>

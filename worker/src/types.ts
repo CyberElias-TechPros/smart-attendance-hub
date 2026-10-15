@@ -26,6 +26,8 @@ export interface Department {
   code: string;
   icon?: string;
   color?: string;
+  /** The faculty above it (P5.2: what a "faculty reports" grant resolves to). */
+  facultyId?: string;
 }
 
 export interface Course {
@@ -687,6 +689,13 @@ export interface ReportFilters {
   dir?: "asc" | "desc";
   page?: number;
   pageSize?: number;
+  /**
+   * Internal — never parsed from a query string. The courses a reporting grant
+   * covers, applied as an OR group by the repo so a grant is *additive*: a
+   * lecturer trusted with a department still sees the courses they teach, even
+   * when those sit in another department (service courses do exactly that).
+   */
+  scope?: { departmentId?: string; facultyId?: string; lecturerId?: string };
 }
 
 export type ReportSortKey =

@@ -37,6 +37,7 @@ import { Route as AdminDepartmentsRouteImport } from './routes/admin.departments
 import { Route as AdminCoursesRouteImport } from './routes/admin.courses'
 import { Route as AdminAuditRouteImport } from './routes/admin.audit'
 import { Route as AdminAttendanceRouteImport } from './routes/admin.attendance'
+import { Route as AdminAccessRouteImport } from './routes/admin.access'
 import { Route as AdminCoursesIndexRouteImport } from './routes/admin.courses.index'
 import { Route as StudentCoursesCourseIdRouteImport } from './routes/student/courses/$courseId'
 import { Route as LecturerSessionsSessionIdRouteImport } from './routes/lecturer.sessions.$sessionId'
@@ -186,6 +187,11 @@ const AdminAttendanceRoute = AdminAttendanceRouteImport.update({
   path: '/attendance',
   getParentRoute: () => AdminRoute,
 } as any)
+const AdminAccessRoute = AdminAccessRouteImport.update({
+  id: '/access',
+  path: '/access',
+  getParentRoute: () => AdminRoute,
+} as any)
 const AdminCoursesIndexRoute = AdminCoursesIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -236,6 +242,7 @@ export interface FileRoutesByFullPath {
   '/print': typeof PrintRoute
   '/settings': typeof SettingsRoute
   '/student': typeof StudentRouteWithChildren
+  '/admin/access': typeof AdminAccessRoute
   '/admin/attendance': typeof AdminAttendanceRoute
   '/admin/audit': typeof AdminAuditRoute
   '/admin/courses': typeof AdminCoursesRouteWithChildren
@@ -271,6 +278,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/print': typeof PrintRoute
   '/settings': typeof SettingsRoute
+  '/admin/access': typeof AdminAccessRoute
   '/admin/attendance': typeof AdminAttendanceRoute
   '/admin/audit': typeof AdminAuditRoute
   '/admin/departments': typeof AdminDepartmentsRoute
@@ -309,6 +317,7 @@ export interface FileRoutesById {
   '/print': typeof PrintRoute
   '/settings': typeof SettingsRoute
   '/student': typeof StudentRouteWithChildren
+  '/admin/access': typeof AdminAccessRoute
   '/admin/attendance': typeof AdminAttendanceRoute
   '/admin/audit': typeof AdminAuditRoute
   '/admin/courses': typeof AdminCoursesRouteWithChildren
@@ -349,6 +358,7 @@ export interface FileRouteTypes {
     | '/print'
     | '/settings'
     | '/student'
+    | '/admin/access'
     | '/admin/attendance'
     | '/admin/audit'
     | '/admin/courses'
@@ -384,6 +394,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/print'
     | '/settings'
+    | '/admin/access'
     | '/admin/attendance'
     | '/admin/audit'
     | '/admin/departments'
@@ -421,6 +432,7 @@ export interface FileRouteTypes {
     | '/print'
     | '/settings'
     | '/student'
+    | '/admin/access'
     | '/admin/attendance'
     | '/admin/audit'
     | '/admin/courses'
@@ -660,6 +672,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminAttendanceRouteImport
       parentRoute: typeof AdminRoute
     }
+    '/admin/access': {
+      id: '/admin/access'
+      path: '/access'
+      fullPath: '/admin/access'
+      preLoaderRoute: typeof AdminAccessRouteImport
+      parentRoute: typeof AdminRoute
+    }
     '/admin/courses/': {
       id: '/admin/courses/'
       path: '/'
@@ -740,6 +759,7 @@ const AdminCoursesRouteWithChildren = AdminCoursesRoute._addFileChildren(
 )
 
 interface AdminRouteChildren {
+  AdminAccessRoute: typeof AdminAccessRoute
   AdminAttendanceRoute: typeof AdminAttendanceRoute
   AdminAuditRoute: typeof AdminAuditRoute
   AdminCoursesRoute: typeof AdminCoursesRouteWithChildren
@@ -758,6 +778,7 @@ interface AdminRouteChildren {
 }
 
 const AdminRouteChildren: AdminRouteChildren = {
+  AdminAccessRoute: AdminAccessRoute,
   AdminAttendanceRoute: AdminAttendanceRoute,
   AdminAuditRoute: AdminAuditRoute,
   AdminCoursesRoute: AdminCoursesRouteWithChildren,

@@ -687,6 +687,81 @@ export class Repo {
     await this.revokeTokens(userId);
   }
 
+  // ── Capability grants (plan §9 / P5.2) ──────────────────────────────────
+  //
+  // Roles decide which product somebody is in; grants decide how much of it they
+  // may see. Every reader of a grant goes through `hasPermission`, so there is
+  // one answer to "may this person do this?" rather than a rule per endpoint.
+
+  /** Every grant in the institution — one query, so an access screen does not
+   *  issue a request per staff member. */
+  async listAccessGrants(): Promise<
+    Array<{ userId: string; permission: string; grantedBy?: string; grantedAt: number }>
+  > {
+    const rows = await this.all<Row>(
+      "SELECT user_id, permission, granted_by, granted_at FROM access_grants ORDER BY granted_at ASC",
+    );
+    return rows.map((r) => ({
+      userId: str(r.user_id),
+      permission: str(r.permission),
+      grantedBy: optStr(r.granted_by),
+      grantedAt: num(r.granted_at),
+    }));
+  }
+
+  async permissionsFor(userId: string): Promise<string[]> {
+    const rows = await this.all<Row>(
+      "SELECT permission FROM access_grants WHERE user_id = ? ORDER BY permission ASC",
+      [userId],
+    );
+    return rows.map((r) => str(r.permission));
+  }
+
+  async hasPermission(userId: string, permission: string): Promise<boolean> {
+    const row = await this.first<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM access_grants WHERE user_id = ? AND permission = ?",
+      [userId, permission],
+    );
+    return (row?.c ?? 0) > 0;
+  }
+
+  /** Idempotent: granting twice is not an error, and the first grant keeps its
+   *  "who and when" — re-stamping it would rewrite history. */
+  async grantPermission(userId: string, permission: string, grantedBy?: string): Promise<boolean> {
+    const before = await this.hasPermission(userId, permission);
+    await this.run(
+      `INSERT INTO access_grants (user_id, permission, granted_by, granted_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(user_id, permission) DO NOTHING`,
+      [userId, permission, grantedBy ?? null, Date.now()],
+    );
+    return !before; // true when this call is what created the grant
+  }
+
+  async revokePermission(userId: string, permission: string): Promise<boolean> {
+    const before = await this.hasPermission(userId, permission);
+    await this.run("DELETE FROM access_grants WHERE user_id = ? AND permission = ?", [
+      userId,
+      permission,
+    ]);
+    return before;
+  }
+
+  /**
+   * Change somebody's role. The callers guard the two invariants that matter —
+   * an administrator cannot remove their own administration, and the last
+   * administrator cannot be demoted — because both need to know who is acting.
+   * A role change also revokes outstanding tokens: a token carries the role it
+   * was signed with, so leaving it alive would keep the old powers until expiry.
+   */
+  async setUserRole(userId: string, role: Role): Promise<void> {
+    const user = await this.getUser(userId);
+    if (!user) throw new BusinessError("User not found");
+    if (user.role === role) return;
+    await this.run("UPDATE users SET role = ? WHERE id = ?", [role, userId]);
+    await this.revokeTokens(userId);
+  }
+
   /** Cascades: enrollments, attendance records, and (for lecturers) their sessions. */
   async deleteUser(id: string): Promise<void> {
     const u = await this.getUser(id);
@@ -717,6 +792,8 @@ export class Repo {
       code: str(r.code),
       icon: optStr(r.icon),
       color: optStr(r.color),
+      // Carried since P5.2: the faculty scope a reporting grant resolves to.
+      facultyId: optStr(r.faculty_id),
     }));
   }
 
@@ -3618,9 +3695,21 @@ export class Repo {
       where.push("d.faculty_id = ?");
       params.push(filters.facultyId);
     }
-    if (filters.lecturerId) {
-      where.push("c.lecturer_id = ?");
-      params.push(filters.lecturerId);
+    // The requested lecturer and the grant scope form one OR group: a grant is
+    // additive (see ReportFilters.scope), while a request on its own behaves
+    // exactly as it always did — one term, one lecturer.
+    const lectured = [
+      filters.lecturerId ? "c.lecturer_id = ?" : null,
+      filters.scope?.lecturerId ? "c.lecturer_id = ?" : null,
+      filters.scope?.departmentId ? "c.department_id = ?" : null,
+      filters.scope?.facultyId ? "d.faculty_id = ?" : null,
+    ].filter((v): v is string => v !== null);
+    if (lectured.length > 0) {
+      where.push(`(${lectured.join(" OR ")})`);
+      if (filters.lecturerId) params.push(filters.lecturerId);
+      if (filters.scope?.lecturerId) params.push(filters.scope.lecturerId);
+      if (filters.scope?.departmentId) params.push(filters.scope.departmentId);
+      if (filters.scope?.facultyId) params.push(filters.scope.facultyId);
     }
     if (filters.category) {
       where.push("c.category = ?");
@@ -3921,9 +4010,18 @@ export class Repo {
       where.push("c.department_id = ?");
       params.push(filters.departmentId);
     }
-    if (filters.lecturerId) {
-      where.push("s.lecturer_id = ?");
-      params.push(filters.lecturerId);
+    const lectured = [
+      filters.lecturerId ? "s.lecturer_id = ?" : null,
+      filters.scope?.lecturerId ? "s.lecturer_id = ?" : null,
+      filters.scope?.departmentId ? "c.department_id = ?" : null,
+      filters.scope?.facultyId ? "d.faculty_id = ?" : null,
+    ].filter((v): v is string => v !== null);
+    if (lectured.length > 0) {
+      where.push(`(${lectured.join(" OR ")})`);
+      if (filters.lecturerId) params.push(filters.lecturerId);
+      if (filters.scope?.lecturerId) params.push(filters.scope.lecturerId);
+      if (filters.scope?.departmentId) params.push(filters.scope.departmentId);
+      if (filters.scope?.facultyId) params.push(filters.scope.facultyId);
     }
     if (filters.courseId) {
       where.push("c.id = ?");

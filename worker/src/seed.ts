@@ -1485,6 +1485,24 @@ export async function seedD1(db: D1Database): Promise<void> {
     resultRows,
   );
 
+  // ── One capability grant out of the box (plan §9 / P5.2) ─────────────────
+  //
+  // A fresh install should not show an empty access grid, and the widening a
+  // grant produces should be visible on the demo data: Dr. Grace Adeyemi teaches
+  // two of the Electrical Engineering courses and the department has three, so
+  // her department report is bigger than the courses she teaches. Dr. Samuel
+  // Nwosu gets the audit trail. Both are granted by the seeded administrator,
+  // which is how a real grant happens.
+  await insertMany(
+    db,
+    "access_grants",
+    ["user_id", "permission", "granted_by", "granted_at"],
+    [
+      [users[3].id, "reports.department", users[0].id, now],
+      [users[4].id, "audit.view", users[0].id, now],
+    ],
+  );
+
   await db
     .prepare(
       `INSERT OR IGNORE INTO site_settings (id, institution_name, at_risk_threshold, marquee_items, testimonials,

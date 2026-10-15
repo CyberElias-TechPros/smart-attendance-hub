@@ -754,3 +754,40 @@ export interface ImportInput {
   /** Optional: give imported people this password instead of a generated one. */
   defaultPassword?: string;
 }
+
+// ─── Capabilities & administrators (plan §9 / P5.2) ─────────────────────────
+
+export interface PermissionDefinition {
+  key: string;
+  label: string;
+  description: string;
+}
+
+export interface StaffAccess {
+  id: string;
+  name: string;
+  email: string;
+  role: Role;
+  staffId?: string;
+  departmentId?: string;
+  departmentName?: string;
+  /** Capability keys granted to this person (administrators hold them all by role). */
+  permissions: string[];
+}
+
+export interface AccessOverview {
+  /** The catalogue travels with the data, so the screen cannot invent a key. */
+  permissions: PermissionDefinition[];
+  admins: number;
+  staff: StaffAccess[];
+}
+
+export interface MyAccess {
+  role: Role;
+  /** Grants held (empty for an administrator — they hold everything by role). */
+  permissions: string[];
+  /** What the API will actually let them do. */
+  effective: string[];
+  /** The catalogue, so a screen can name a capability without a second list. */
+  catalogue: PermissionDefinition[];
+}

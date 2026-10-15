@@ -10,6 +10,7 @@ import { redirect } from "@tanstack/react-router";
 
 import {
   academics,
+  access,
   audit,
   exams,
   auth,
@@ -199,6 +200,21 @@ export const notificationSummaryQO = queryOptions({
   refetchInterval: 30_000,
   refetchIntervalInBackground: false,
   staleTime: 15_000,
+});
+
+// ─── Capabilities & administrators (plan §9 / P5.2) ─────────────────────────
+
+export const accessQO = queryOptions({
+  queryKey: ["access"],
+  queryFn: () => access.list(),
+});
+
+/** A person's own capabilities — the sidebar and Settings read this rather than
+ *  guessing from the role. */
+export const myAccessQO = queryOptions({
+  queryKey: ["access", "me"],
+  queryFn: () => access.me(),
+  staleTime: 60_000,
 });
 
 export const usersQO = (role?: Role) =>

@@ -25,10 +25,12 @@ import type {
   Exam,
   ExamKind,
   ExamResult,
+  AccessOverview,
   ImportApplyResult,
   ImportInput,
   ImportKind,
   ImportPreview,
+  MyAccess,
   FacultyReport,
   NotificationsPage,
   ResultAnalytics,
@@ -627,6 +629,33 @@ export const imports = {
     request<ImportPreview>("/api/import/preview", { method: "POST", body: input }),
   apply: (input: ImportInput) =>
     request<ImportApplyResult>("/api/import/apply", { method: "POST", body: input }),
+};
+
+// ─── Capabilities & administrators (plan §9 / P5.2) ─────────────────────────
+
+/**
+ * Reading and changing who may do what. A grant is additive — it widens a
+ * lecturer's *reading* scope — and every change is written to the audit trail
+ * server-side, so nothing here is silent.
+ */
+export const access = {
+  list: () => request<AccessOverview>("/api/access"),
+  me: () => request<MyAccess>("/api/access/me"),
+  grant: (userId: string, permission: string) =>
+    request<{ ok: boolean; created: boolean }>(`/api/access/${encodeURIComponent(userId)}/grants`, {
+      method: "POST",
+      body: { permission },
+    }),
+  revoke: (userId: string, permission: string) =>
+    request<{ ok: boolean; removed: boolean }>(
+      `/api/access/${encodeURIComponent(userId)}/grants/${encodeURIComponent(permission)}`,
+      { method: "DELETE" },
+    ),
+  setRole: (userId: string, role: "admin" | "lecturer") =>
+    request<{ ok: boolean }>(`/api/access/${encodeURIComponent(userId)}/role`, {
+      method: "POST",
+      body: { role },
+    }),
 };
 
 /**

@@ -17,6 +17,12 @@ import {
 import { getRepo, type D1Database } from "./db";
 import { hashedPointer } from "./audit";
 import {
+  PERMISSIONS,
+  isPermission,
+  permissionLabel,
+  type Permission,
+} from "../../shared/permissions";
+import {
   applyImport,
   previewImport,
   templateColumns,
@@ -29,7 +35,7 @@ import { BusinessError } from "./errors";
 import { ApiError, clientIp, jsonError, jsonOk, readJsonBody } from "./http";
 import { DEFAULT_LIMITS, FixedWindowLimiter } from "./rate-limit";
 import { isValidTimeZone } from "./time";
-import type { Role, User } from "./types";
+import type { ReportFilters, Role, User } from "./types";
 
 export interface Env {
   DB: D1Database;
@@ -451,6 +457,14 @@ const importSchema = z.object({
   defaultPassword: z.string().trim().min(8).max(72).optional(),
 });
 
+const accessGrantSchema = z.object({
+  permission: z.string().trim().min(3).max(60),
+});
+
+/** Administrators and staff are the accounts whose access is editable here;
+ *  students are managed on the Students page. */
+const roleChangeSchema = z.object({ role: z.enum(["admin", "lecturer"]) });
+
 const snapshotSchema = z.object({
   scope: z.enum(["semester", "course", "faculty", "department", "institution"]),
   entityId: z.string().trim().max(60).optional(),
@@ -637,6 +651,85 @@ async function requireCourseOwnership(
     if (mine.some((c) => c.id === courseId)) return;
   }
   throw new ApiError(403, "forbidden", "This course is not assigned to you");
+}
+
+/**
+ * May this person do this? Administrators hold every capability by role; anybody
+ * else holds exactly what an administrator granted them (plan §9 / P5.2). One
+ * function, so "what does this checkbox actually grant?" has one answer.
+ */
+async function can(repo: FullCtx["repo"], user: User, permission: Permission): Promise<boolean> {
+  if (user.role === "admin") return true;
+  return await repo.hasPermission(user.id, permission);
+}
+
+async function requirePermission(
+  ctx: FullCtx,
+  permission: Permission,
+  message?: string,
+): Promise<void> {
+  if (await can(ctx.repo, ctx.user, permission)) return;
+  throw new ApiError(
+    403,
+    "forbidden",
+    message ?? `This needs the "${permissionLabel(permission)}" permission`,
+  );
+}
+
+/**
+ * The data scope a user may read reports in.
+ *
+ * `filters` comes from the query string; the scope is applied *after* it and only
+ * ever narrows — so a hand-crafted request (or a UI bug) cannot widen what
+ * somebody sees. An administrator is institution-wide; a lecturer is pinned to
+ * their own courses unless a reporting grant says otherwise.
+ */
+async function reportScope(ctx: FullCtx, filters: ReportFilters): Promise<ReportFilters> {
+  const { user, repo } = ctx;
+  if (user.role === "admin") return filters;
+  if (await repo.hasPermission(user.id, "reports.institution")) return filters;
+  if (await repo.hasPermission(user.id, "reports.faculty")) {
+    const departments = await repo.listDepartments();
+    const mine = departments.find((d) => d.id === user.departmentId);
+    if (mine?.facultyId)
+      return { ...filters, scope: { facultyId: mine.facultyId, lecturerId: user.id } };
+    return { ...filters, scope: { lecturerId: user.id } };
+  }
+  if (await repo.hasPermission(user.id, "reports.department")) {
+    if (user.departmentId) {
+      return { ...filters, scope: { departmentId: user.departmentId, lecturerId: user.id } };
+    }
+    return { ...filters, scope: { lecturerId: user.id } };
+  }
+  return { ...filters, scope: { lecturerId: user.id } };
+}
+
+/**
+ * Read access to one course: the lecturer who teaches it, an administrator, or a
+ * reporting grant that covers the course. Writes keep using
+ * `requireCourseOwnership` — a grant widens what may be *read*, never what may be
+ * changed.
+ */
+async function requireCourseRead(
+  repo: FullCtx["repo"],
+  user: User,
+  courseId: string,
+): Promise<void> {
+  if (user.role === "admin") return;
+  const course = await repo.getCourse(courseId);
+  if (!course) throw new ApiError(404, "not_found", "Course not found");
+  if (course.lecturerId === user.id) return;
+  if (await repo.hasPermission(user.id, "reports.institution")) return;
+  if (await repo.hasPermission(user.id, "reports.department")) {
+    if (course.departmentId && course.departmentId === user.departmentId) return;
+  }
+  if (await repo.hasPermission(user.id, "reports.faculty")) {
+    const departments = await repo.listDepartments();
+    const mine = departments.find((d) => d.id === user.departmentId);
+    const theirs = departments.find((d) => d.id === course.departmentId);
+    if (mine?.facultyId && theirs?.facultyId && mine.facultyId === theirs.facultyId) return;
+  }
+  throw new ApiError(403, "forbidden", "This course is not within your access");
 }
 
 const routes: Route[] = [
@@ -1344,7 +1437,7 @@ const routes: Route[] = [
     pattern: /^\/api\/reports\/course\/([^/]+)$/,
     handler: async (req, p, base) => {
       const ctx = await needAuth(req, base, ["admin", "lecturer"]);
-      await requireCourseOwnership(ctx.repo, ctx.user, p[0]);
+      await requireCourseRead(ctx.repo, ctx.user, p[0]);
       const filters = await queryOf(req, reportFilterSchema);
       const report = await ctx.repo.courseReport(p[0], filters);
       if (!report) throw new ApiError(404, "not_found", "Course not found");
@@ -1532,9 +1625,9 @@ const routes: Route[] = [
     handler: async (req, _p, base) => {
       const ctx = await needAuth(req, base, ["admin", "lecturer"]);
       const filters = await queryOf(req, reportFilterSchema);
-      // Lecturers may only report on their own courses, whatever they ask for.
-      if (ctx.user.role === "lecturer") filters.lecturerId = ctx.user.id;
-      return jsonOk(await ctx.repo.coursesReport(filters));
+      // Whatever was asked for, the answer is narrowed to what this person may
+      // read: their own courses, their department, their faculty, or everything.
+      return jsonOk(await ctx.repo.coursesReport(await reportScope(ctx, filters)));
     },
   },
   {
@@ -1546,8 +1639,7 @@ const routes: Route[] = [
     handler: async (req, _p, base) => {
       const ctx = await needAuth(req, base, ["admin", "lecturer"]);
       const filters = await queryOf(req, reportFilterSchema);
-      if (ctx.user.role === "lecturer") filters.lecturerId = ctx.user.id;
-      return jsonOk(await ctx.repo.sessionRegister(filters));
+      return jsonOk(await ctx.repo.sessionRegister(await reportScope(ctx, filters)));
     },
   },
   {
@@ -1555,7 +1647,7 @@ const routes: Route[] = [
     pattern: /^\/api\/reports\/courses\/([^/]+)\/sessions$/,
     handler: async (req, p, base) => {
       const ctx = await needAuth(req, base, ["admin", "lecturer"]);
-      await requireCourseOwnership(ctx.repo, ctx.user, p[0]);
+      await requireCourseRead(ctx.repo, ctx.user, p[0]);
       const filters = await queryOf(req, reportFilterSchema);
       return jsonOk(await ctx.repo.courseSessionStats(p[0], filters));
     },
@@ -1568,7 +1660,7 @@ const routes: Route[] = [
     pattern: /^\/api\/reports\/courses\/([^/]+)\/students\/([^/]+)$/,
     handler: async (req, p, base) => {
       const ctx = await needAuth(req, base, ["admin", "lecturer"]);
-      await requireCourseOwnership(ctx.repo, ctx.user, p[0]);
+      await requireCourseRead(ctx.repo, ctx.user, p[0]);
       const rows = await ctx.repo.studentCourseSessions(p[1], p[0]);
       const present = rows.filter((r) => r.status === "present").length;
       const late = rows.filter((r) => r.status === "late").length;
@@ -1671,12 +1763,14 @@ const routes: Route[] = [
       if (!exam) throw new ApiError(404, "not_found", "Exam not found");
       await requireCourseOwnership(ctx.repo, ctx.user, exam.courseId);
       const data = await bodyOf(req, examUpdateSchema);
-      // Publishing releases marks to students, so only an administrator may do it
-      // (a lecturer cannot un-publish a bad result to hide it either).
-      if (data.published !== undefined && ctx.user.role !== "admin") {
-        throw new ApiError(
-          403,
-          "forbidden",
+      // Publishing releases marks to students, so it takes an administrator —
+      // or a lecturer an administrator has trusted with the capability. Either
+      // way the course has to be theirs (checked above), and a lecturer still
+      // cannot un-publish a bad result to hide it.
+      if (data.published !== undefined) {
+        await requirePermission(
+          ctx,
+          "results.publish",
           "Only an administrator can publish or unpublish results",
         );
       }
@@ -1819,7 +1913,7 @@ const routes: Route[] = [
     pattern: /^\/api\/reports\/courses\/([^/]+)\/analytics$/,
     handler: async (req, p, base) => {
       const ctx = await needAuth(req, base, ["admin", "lecturer"]);
-      await requireCourseOwnership(ctx.repo, ctx.user, p[0]);
+      await requireCourseRead(ctx.repo, ctx.user, p[0]);
       const filters = await queryOf(req, reportFilterSchema);
       const analytics = await ctx.repo.resultAnalytics(p[0], filters);
       if (!analytics) throw new ApiError(404, "not_found", "Course not found");
@@ -1882,10 +1976,10 @@ const routes: Route[] = [
       // marks for their own course, but not people.
       const ctx = await needAuth(req, base, ["admin", "lecturer"]);
       const data = await bodyOf(req, importSchema);
-      if (data.kind !== "results" && ctx.user.role !== "admin") {
-        throw new ApiError(
-          403,
-          "forbidden",
+      if (data.kind !== "results") {
+        await requirePermission(
+          ctx,
+          "imports.people",
           "Only an administrator can import people or enrolments",
         );
       }
@@ -2028,9 +2122,167 @@ const routes: Route[] = [
     method: "GET",
     pattern: /^\/api\/audit$/,
     handler: async (req, _p, base) => {
-      const ctx = await needAuth(req, base, ["admin"]);
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      await requirePermission(ctx, "audit.view");
       const query = await queryOf(req, auditQuerySchema);
       return jsonOk(await ctx.repo.listAudit(query));
+    },
+  },
+  // ── Capability grants & multiple administrators (plan §9 / P5.2) ──
+  {
+    method: "GET",
+    pattern: /^\/api\/access$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const [users, grants, departments] = await Promise.all([
+        ctx.repo.listUsers(),
+        ctx.repo.listAccessGrants(),
+        ctx.repo.listDepartments(),
+      ]);
+      const departmentName = new Map(departments.map((d) => [d.id, d.name]));
+      const byUser = new Map<string, Array<{ permission: string; grantedAt: number }>>();
+      for (const grant of grants) {
+        const list = byUser.get(grant.userId) ?? [];
+        list.push({ permission: grant.permission, grantedAt: grant.grantedAt });
+        byUser.set(grant.userId, list);
+      }
+      return jsonOk({
+        // The catalogue travels with the data: the screen renders the same keys
+        // the API checks, and a permission removed from the code disappears from
+        // the screen instead of becoming a checkbox that grants nothing.
+        permissions: PERMISSIONS,
+        admins: users.filter((u) => u.role === "admin").length,
+        staff: users
+          .filter((u) => u.role !== "student")
+          .map((u) => ({
+            id: u.id,
+            name: u.name,
+            email: u.email,
+            role: u.role,
+            staffId: u.staffId,
+            departmentId: u.departmentId,
+            departmentName: u.departmentId ? departmentName.get(u.departmentId) : undefined,
+            permissions: (byUser.get(u.id) ?? []).map((g) => g.permission),
+          })),
+      });
+    },
+  },
+  {
+    // A person's own capabilities, so a lecturer's sidebar can show the Audit
+    // trail link exactly when they hold the capability behind it.
+    method: "GET",
+    pattern: /^\/api\/access\/me$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base);
+      const permissions = await ctx.repo.permissionsFor(ctx.user.id);
+      return jsonOk({
+        role: ctx.user.role,
+        permissions,
+        // An administrator's answer is the whole catalogue — the honest one, since
+        // every check passes for them.
+        effective: ctx.user.role === "admin" ? PERMISSIONS.map((p) => p.key) : permissions,
+        // The catalogue is documentation, not a secret: shipping it means the
+        // client can name a capability without hard-coding a second copy of the
+        // list that would drift from the one the guards use.
+        catalogue: PERMISSIONS,
+      });
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/access\/([^/]+)\/grants$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const data = await bodyOf(req, accessGrantSchema);
+      if (!isPermission(data.permission)) {
+        throw new ApiError(400, "validation_error", "Unknown permission");
+      }
+      const target = await ctx.repo.getUser(p[0]);
+      if (!target) throw new ApiError(404, "not_found", "User not found");
+      if (target.role === "student") {
+        throw new ApiError(400, "validation_error", "Students cannot hold staff permissions");
+      }
+      const created = await ctx.repo.grantPermission(target.id, data.permission, ctx.user.id);
+      if (created) {
+        await recordAudit(
+          ctx.repo,
+          {
+            action: "permission.grant",
+            entityType: "user",
+            entityId: target.id,
+            after: { permission: data.permission },
+            reason: `Granted ${permissionLabel(data.permission)} to ${target.name}`,
+          },
+          auditCtx(req, base, ctx.user),
+        );
+      }
+      return jsonOk({ ok: true, created });
+    },
+  },
+  {
+    method: "DELETE",
+    pattern: /^\/api\/access\/([^/]+)\/grants\/([^/]+)$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const permission = decodeURIComponent(p[1]);
+      const target = await ctx.repo.getUser(p[0]);
+      if (!target) throw new ApiError(404, "not_found", "User not found");
+      const removed = await ctx.repo.revokePermission(target.id, permission);
+      if (removed) {
+        await recordAudit(
+          ctx.repo,
+          {
+            action: "permission.revoke",
+            entityType: "user",
+            entityId: target.id,
+            before: { permission },
+            reason: `Revoked ${permissionLabel(permission)} from ${target.name}`,
+          },
+          auditCtx(req, base, ctx.user),
+        );
+      }
+      return jsonOk({ ok: true, removed });
+    },
+  },
+  {
+    // Multiple administrators were already possible; making one — and taking the
+    // capability away — is the part that needs a guard rail.
+    method: "POST",
+    pattern: /^\/api\/access\/([^/]+)\/role$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const data = await bodyOf(req, roleChangeSchema);
+      const target = await ctx.repo.getUser(p[0]);
+      if (!target) throw new ApiError(404, "not_found", "User not found");
+      // The invariant is about the institution, not about manners: an
+      // administrator may step down (or be demoted) as long as somebody is left
+      // holding the keys. That single rule is also what makes "demote yourself"
+      // safe, so there is no second rule for it.
+      if (target.role === "admin" && data.role !== "admin") {
+        const admins = await ctx.repo.countAdmins();
+        if (admins <= 1) {
+          throw new ApiError(
+            400,
+            "validation_error",
+            "The last administrator cannot be demoted — promote somebody else first",
+          );
+        }
+      }
+      await ctx.repo.setUserRole(target.id, data.role);
+      await recordAudit(
+        ctx.repo,
+        {
+          action: "user.role_change",
+          entityType: "user",
+          entityId: target.id,
+          before: { role: target.role },
+          after: { role: data.role },
+          reason: `${target.name}: ${target.role} → ${data.role}${target.id === ctx.user.id ? " (self)" : ""}`,
+        },
+        auditCtx(req, base, ctx.user),
+      );
+      const updated = await ctx.repo.getUser(target.id);
+      return jsonOk({ ok: true, user: updated });
     },
   },
   {
