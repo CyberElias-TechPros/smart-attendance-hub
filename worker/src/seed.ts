@@ -578,8 +578,18 @@ export async function seedD1(db: D1Database): Promise<void> {
   const enrollmentRows: unknown[][] = [];
   const sessionRows: unknown[][] = [];
   const recordRows: unknown[][] = [];
+  // Recurring series behind the Timetable page (plan P4.1). The weekly pattern is
+  // what an institution actually publishes, and it is what makes clash detection
+  // meaningful — the seeded pattern contains one genuine room clash (see below).
+  const scheduleRows: unknown[][] = [];
 
-  for (const c of courses) {
+  // Rooms are reused across the catalogue on purpose: reusing LT-1 for two
+  // courses that meet on the same day at the same hour is exactly the conflict
+  // the Timetable page must surface, so the demo data contains a real one.
+  const ROOMS = ["LT-1", "LT-2", "LT-3", "Lab A", "Hall B"];
+  const DAY_PATTERNS = ["1,3", "2,4", "1", "3,5", "2", "4", "5", "3", "1,4", "2,5", "5"];
+
+  for (const [courseIndex, c] of courses.entries()) {
     const courseId = id();
     courseRows.push([
       courseId,
@@ -659,7 +669,51 @@ export async function seedD1(db: D1Database): Promise<void> {
         ]);
       }
     }
+
+    scheduleRows.push([
+      id(10),
+      courseId,
+      c.lecturerId,
+      55, // a standard 55-minute lecture slot
+      `Weekly ${c.code}`,
+      "weekly",
+      ROOMS[courseIndex % ROOMS.length],
+      DAY_PATTERNS[courseIndex % DAY_PATTERNS.length],
+      8 * 60 + (courseIndex % 5) * 60, // 08:00, 09:00, 10:00, 11:00, 12:00
+      0,
+      // The series has already delivered its legs: `occurrences` equals the cap,
+      // so the lifecycle tick leaves it alone (it must not invent new lectures
+      // for a demo dataset, and the legacy schedule tests assert exact counts).
+      1,
+      1,
+      now - 2 * day,
+      1,
+      now - 14 * day,
+    ]);
   }
+
+  await insertMany(
+    db,
+    "schedules",
+    [
+      "id",
+      "course_id",
+      "lecturer_id",
+      "duration_minutes",
+      "topic",
+      "recurrence",
+      "room",
+      "days_mask",
+      "minute_of_day",
+      "tz_offset_minutes",
+      "max_occurrences",
+      "occurrences",
+      "last_start_at",
+      "enabled",
+      "created_at",
+    ],
+    scheduleRows,
+  );
 
   await insertMany(
     db,

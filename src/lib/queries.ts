@@ -17,6 +17,7 @@ import {
   faculties,
   notifications,
   reports,
+  schedules,
   sessions,
   settings,
   student,
@@ -143,6 +144,11 @@ export const auditQO = (query: Record<string, string | number | undefined> = {})
   });
 
 // ─── Notifications (plan §4.5 / P4.5) ───────────────────────────────────────
+
+export const schedulesQO = queryOptions({
+  queryKey: ["schedules"],
+  queryFn: () => schedules.list(),
+});
 
 export const sessionRegisterQO = (filters: ReportFilters = {}) =>
   queryOptions({

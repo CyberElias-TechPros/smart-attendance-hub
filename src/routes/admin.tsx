@@ -4,6 +4,7 @@ import { AppShell, type NavItem } from "@/components/AppShell";
 import {
   Bell,
   CalendarCheck,
+  CalendarClock,
   CirclePlus,
   LayoutDashboard,
   GraduationCap,
@@ -38,6 +39,7 @@ const nav: NavItem[] = [
       { to: "/admin/courses/categories", label: "Course Categories", icon: Tags },
     ],
   },
+  { to: "/admin/timetable", label: "Timetable", icon: CalendarClock },
   { to: "/admin/attendance", label: "Attendance", icon: CalendarCheck },
   { to: "/admin/notifications", label: "Notifications", icon: Bell },
   { to: "/admin/reports", label: "Reports", icon: FileBarChart },

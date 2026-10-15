@@ -23,6 +23,7 @@ import { Route as StudentHistoryRouteImport } from './routes/student.history'
 import { Route as StudentAttendRouteImport } from './routes/student.attend'
 import { Route as LecturerSessionsRouteImport } from './routes/lecturer.sessions'
 import { Route as LecturerCoursesRouteImport } from './routes/lecturer.courses'
+import { Route as AdminTimetableRouteImport } from './routes/admin.timetable'
 import { Route as AdminStudentsRouteImport } from './routes/admin.students'
 import { Route as AdminSettingsRouteImport } from './routes/admin.settings'
 import { Route as AdminReportsRouteImport } from './routes/admin.reports'
@@ -111,6 +112,11 @@ const LecturerCoursesRoute = LecturerCoursesRouteImport.update({
   id: '/courses',
   path: '/courses',
   getParentRoute: () => LecturerRoute,
+} as any)
+const AdminTimetableRoute = AdminTimetableRouteImport.update({
+  id: '/timetable',
+  path: '/timetable',
+  getParentRoute: () => AdminRoute,
 } as any)
 const AdminStudentsRoute = AdminStudentsRouteImport.update({
   id: '/students',
@@ -222,6 +228,7 @@ export interface FileRoutesByFullPath {
   '/admin/reports': typeof AdminReportsRoute
   '/admin/settings': typeof AdminSettingsRoute
   '/admin/students': typeof AdminStudentsRoute
+  '/admin/timetable': typeof AdminTimetableRoute
   '/lecturer/courses': typeof LecturerCoursesRouteWithChildren
   '/lecturer/sessions': typeof LecturerSessionsRouteWithChildren
   '/student/attend': typeof StudentAttendRoute
@@ -252,6 +259,7 @@ export interface FileRoutesByTo {
   '/admin/reports': typeof AdminReportsRoute
   '/admin/settings': typeof AdminSettingsRoute
   '/admin/students': typeof AdminStudentsRoute
+  '/admin/timetable': typeof AdminTimetableRoute
   '/lecturer/courses': typeof LecturerCoursesRouteWithChildren
   '/lecturer/sessions': typeof LecturerSessionsRouteWithChildren
   '/student/attend': typeof StudentAttendRoute
@@ -287,6 +295,7 @@ export interface FileRoutesById {
   '/admin/reports': typeof AdminReportsRoute
   '/admin/settings': typeof AdminSettingsRoute
   '/admin/students': typeof AdminStudentsRoute
+  '/admin/timetable': typeof AdminTimetableRoute
   '/lecturer/courses': typeof LecturerCoursesRouteWithChildren
   '/lecturer/sessions': typeof LecturerSessionsRouteWithChildren
   '/student/attend': typeof StudentAttendRoute
@@ -323,6 +332,7 @@ export interface FileRouteTypes {
     | '/admin/reports'
     | '/admin/settings'
     | '/admin/students'
+    | '/admin/timetable'
     | '/lecturer/courses'
     | '/lecturer/sessions'
     | '/student/attend'
@@ -353,6 +363,7 @@ export interface FileRouteTypes {
     | '/admin/reports'
     | '/admin/settings'
     | '/admin/students'
+    | '/admin/timetable'
     | '/lecturer/courses'
     | '/lecturer/sessions'
     | '/student/attend'
@@ -387,6 +398,7 @@ export interface FileRouteTypes {
     | '/admin/reports'
     | '/admin/settings'
     | '/admin/students'
+    | '/admin/timetable'
     | '/lecturer/courses'
     | '/lecturer/sessions'
     | '/student/attend'
@@ -513,6 +525,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/lecturer/courses'
       preLoaderRoute: typeof LecturerCoursesRouteImport
       parentRoute: typeof LecturerRoute
+    }
+    '/admin/timetable': {
+      id: '/admin/timetable'
+      path: '/timetable'
+      fullPath: '/admin/timetable'
+      preLoaderRoute: typeof AdminTimetableRouteImport
+      parentRoute: typeof AdminRoute
     }
     '/admin/students': {
       id: '/admin/students'
@@ -674,6 +693,7 @@ interface AdminRouteChildren {
   AdminReportsRoute: typeof AdminReportsRoute
   AdminSettingsRoute: typeof AdminSettingsRoute
   AdminStudentsRoute: typeof AdminStudentsRoute
+  AdminTimetableRoute: typeof AdminTimetableRoute
   AdminIndexRoute: typeof AdminIndexRoute
 }
 
@@ -688,6 +708,7 @@ const AdminRouteChildren: AdminRouteChildren = {
   AdminReportsRoute: AdminReportsRoute,
   AdminSettingsRoute: AdminSettingsRoute,
   AdminStudentsRoute: AdminStudentsRoute,
+  AdminTimetableRoute: AdminTimetableRoute,
   AdminIndexRoute: AdminIndexRoute,
 }
 

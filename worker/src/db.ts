@@ -385,6 +385,7 @@ export class Repo {
       codeIntervalSeconds: optNum(r.code_interval_seconds),
       seats: optNum(r.seats),
       recurrence: str(r.recurrence),
+      room: optStr(r.room),
       daysMask: str(r.days_mask ?? ""),
       minuteOfDay: num(r.minute_of_day),
       tzOffsetMinutes: num(r.tz_offset_minutes ?? 0),
@@ -1453,6 +1454,7 @@ export class Repo {
     codeIntervalSeconds?: number;
     seats?: number;
     recurrence: string;
+    room?: string;
     daysMask?: string;
     minuteOfDay: number;
     tzOffsetMinutes?: number;
@@ -1477,6 +1479,7 @@ export class Repo {
       codeIntervalSeconds: input.codeIntervalSeconds,
       seats: input.seats,
       recurrence: input.recurrence,
+      room: input.room,
       daysMask: input.daysMask ?? "",
       minuteOfDay: input.minuteOfDay,
       tzOffsetMinutes: input.tzOffsetMinutes ?? 0,
@@ -1489,9 +1492,9 @@ export class Repo {
     };
     await this.run(
       `INSERT INTO schedules (id, course_id, lecturer_id, duration_minutes, topic, latitude, longitude,
-        radius_meters, code_interval_seconds, seats, recurrence, days_mask, minute_of_day,
+        radius_meters, code_interval_seconds, seats, recurrence, room, days_mask, minute_of_day,
         tz_offset_minutes, ends_on, max_occurrences, occurrences, last_start_at, enabled, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?)`,
       [
         s.id,
         s.courseId,
@@ -1504,6 +1507,7 @@ export class Repo {
         s.codeIntervalSeconds ?? null,
         s.seats ?? null,
         s.recurrence,
+        s.room ?? null,
         s.daysMask,
         s.minuteOfDay,
         s.tzOffsetMinutes,

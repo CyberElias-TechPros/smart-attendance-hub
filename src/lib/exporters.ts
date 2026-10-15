@@ -10,6 +10,7 @@
 //      guaranteed to show the same numbers — they are built from one payload.
 
 import type { CourseReportData, ExportOptions } from "./export-types";
+import { DAY_NAMES, formatMinute, type Clash, type TimetableEntry } from "./timetable";
 import type {
   CourseReport,
   CourseReportRow,
@@ -380,4 +381,96 @@ export async function exportCourseReportExcel(
   XLSX.utils.book_append_sheet(wb, lectureSheet, "Lectures");
 
   XLSX.writeFile(wb, `SLAMS_Course_${safeFileName(course.code)}_${stamp()}.xlsx`);
+}
+
+/**
+ * Weekly timetable workbook (plan P4.1).
+ *
+ * Two sheets, because the audience differs: "Weekly grid" is the published
+ * timetable (day × time), and "Clashes & series" is the working document the
+ * timetable officer needs to fix the conflicts. Both come from the same
+ * `TimetableEntry[]` the screen renders, so the paper and the screen agree.
+ */
+export async function exportTimetableExcel(
+  entries: TimetableEntry[],
+  clashes: Clash[],
+  meta: { institutionName: string; sessionName?: string; semesterName?: string },
+) {
+  const XLSX = await import("xlsx");
+  const wb = XLSX.utils.book_new();
+  const live = entries.filter((e) => e.enabled);
+
+  const days = [...new Set(live.map((e) => e.day))].sort((a, b) => a - b);
+  const hours = [...new Set(live.map((e) => Math.floor(e.startMinute / 60)))].sort((a, b) => a - b);
+  const grid: Array<Array<string | number>> = [
+    [
+      meta.institutionName,
+      meta.sessionName ?? "",
+      meta.semesterName ?? "",
+      "Weekly timetable",
+      `Generated ${new Date().toLocaleString()}`,
+    ],
+    [],
+    ["Time", ...days.map((d) => DAY_NAMES[d - 1] ?? String(d))],
+  ];
+  for (const hour of hours) {
+    const row: Array<string | number> = [`${String(hour).padStart(2, "0")}:00`];
+    for (const day of days) {
+      const cell = live
+        .filter((e) => e.day === day && Math.floor(e.startMinute / 60) === hour)
+        .sort((a, b) => a.startMinute - b.startMinute)
+        .map(
+          (e) =>
+            `${e.courseCode} ${formatMinute(e.startMinute)}–${formatMinute(e.endMinute)}` +
+            `${e.room ? ` @ ${e.room}` : ""}${e.lecturerName ? ` (${e.lecturerName})` : ""}`,
+        )
+        .join("\n");
+      row.push(cell);
+    }
+    grid.push(row);
+  }
+  const gridSheet = XLSX.utils.aoa_to_sheet(grid);
+  gridSheet["!cols"] = [{ wch: 10 }, ...days.map(() => ({ wch: 38 }))];
+  XLSX.utils.book_append_sheet(wb, gridSheet, "Weekly grid");
+
+  const seriesRows = entries.map((e) => ({
+    Day: DAY_NAMES[e.day - 1] ?? e.day,
+    Start: formatMinute(e.startMinute),
+    End: formatMinute(e.endMinute),
+    Code: e.courseCode,
+    Course: e.courseTitle,
+    Lecturer: e.lecturerName ?? "",
+    Room: e.room ?? "",
+    Recurrence: e.recurrence,
+    Status: e.enabled ? "running" : "paused",
+    Legs: e.maxOccurrences ? `${e.occurrences}/${e.maxOccurrences}` : String(e.occurrences),
+    "Weekday hours": (e.durationMinutes / 60).toFixed(2),
+  }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(seriesRows), "Series");
+
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(
+      clashes.length
+        ? clashes.map((c) => ({
+            Day: DAY_NAMES[c.a.day - 1] ?? c.a.day,
+            Reason:
+              c.reason === "room+lecturer"
+                ? "Same room and lecturer"
+                : c.reason === "room"
+                  ? "Same room"
+                  : "Same lecturer",
+            "Slot A": `${c.a.courseCode} ${formatMinute(c.a.startMinute)}–${formatMinute(c.a.endMinute)}`,
+            "A room": c.a.room ?? "",
+            "A lecturer": c.a.lecturerName ?? "",
+            "Slot B": `${c.b.courseCode} ${formatMinute(c.b.startMinute)}–${formatMinute(c.b.endMinute)}`,
+            "B room": c.b.room ?? "",
+            "B lecturer": c.b.lecturerName ?? "",
+          }))
+        : [{ Note: "No clashes detected in the current filter" }],
+    ),
+    "Clashes",
+  );
+
+  XLSX.writeFile(wb, `SLAMS_Timetable_${stamp()}.xlsx`);
 }

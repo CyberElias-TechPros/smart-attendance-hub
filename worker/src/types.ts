@@ -146,6 +146,8 @@ export interface Schedule {
   seats?: number;
   /** 'daily' | 'weekdays' | 'weekly' | 'custom' */
   recurrence: string;
+  /** Physical room the series meets in; used for timetable clash detection. */
+  room?: string;
   /** CSV of ISO weekday numbers (Mon=1..Sun=7) when weekly/custom. */
   daysMask: string;
   /** Wall-clock minutes from midnight (the schedule's local time). */

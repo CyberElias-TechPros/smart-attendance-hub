@@ -184,6 +184,8 @@ export interface Schedule {
   codeIntervalSeconds?: number;
   seats?: number;
   recurrence: string;
+  /** Physical room the series meets in; used for timetable clash detection. */
+  room?: string;
   daysMask: string;
   minuteOfDay: number;
   tzOffsetMinutes: number;

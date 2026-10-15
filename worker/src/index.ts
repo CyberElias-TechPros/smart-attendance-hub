@@ -278,6 +278,8 @@ const scheduleSchema = z
     codeIntervalSeconds: z.number().int().min(30).max(600).nullish(),
     seats: z.number().int().min(0).max(10000).optional(),
     recurrence: z.enum(["daily", "weekdays", "weekly", "custom"]),
+    /** Room / lecture theatre; surfaced in the weekly timetable grid. */
+    room: optionalShortStr(60),
     // ISO weekday numbers 1(Mon)..7(Sun), required for weekly/custom.
     days: z.array(z.number().int().min(1).max(7)).max(7).optional(),
     // Local wall-clock start of day in minutes (0 = 00:00, 540 = 09:00).
@@ -1096,7 +1098,11 @@ const routes: Route[] = [
     handler: async (req, _p, base) => {
       const ctx = await needAuth(req, base, ["admin", "lecturer"]);
       const courseId = new URL(req.url).searchParams.get("courseId") ?? undefined;
-      return jsonOk(await ctx.repo.listSchedules(ctx.user.id, courseId));
+      // An administrator sees the whole institution's timetable; a lecturer sees
+      // only their own series (the `lecturerId` argument is what scopes it, so it
+      // is never taken from the query string).
+      const lecturerId = ctx.user.role === "lecturer" ? ctx.user.id : undefined;
+      return jsonOk(await ctx.repo.listSchedules(lecturerId, courseId));
     },
   },
   {
