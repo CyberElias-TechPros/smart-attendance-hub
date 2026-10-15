@@ -23,6 +23,7 @@ import type {
   Department,
   Faculty,
   FacultyReport,
+  NotificationsPage,
   OpenSession,
   Paginated,
   PublicSettings,
@@ -486,6 +487,26 @@ export const audit = {
       pageSize?: number;
     } = {},
   ) => request<Paginated<AuditEntry>>(`/api/audit${reportQuery(query as ReportFilters)}`),
+};
+
+// ─── Notifications (plan §4.5 / P4.5) ──────────────────────────────────────
+
+export const notifications = {
+  list: (opts: { page?: number; pageSize?: number; unreadOnly?: boolean } = {}) =>
+    request<NotificationsPage>(
+      `/api/notifications${reportQuery({
+        page: opts.page,
+        pageSize: opts.pageSize,
+        unreadOnly: opts.unreadOnly ? "1" : undefined,
+      } as unknown as ReportFilters)}`,
+    ),
+  /** Tiny endpoint the bell polls. */
+  summary: () => request<{ unread: number }>(`/api/notifications/summary`),
+  markRead: (id: string) =>
+    request<{ ok: boolean }>(`/api/notifications/${encodeURIComponent(id)}/read`, {
+      method: "POST",
+    }),
+  markAllRead: () => request<{ marked: number }>(`/api/notifications/read-all`, { method: "POST" }),
 };
 
 export const reports = {

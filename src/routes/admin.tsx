@@ -2,6 +2,7 @@ import { createFileRoute, Outlet } from "@tanstack/react-router";
 import { requireRole } from "@/lib/queries";
 import { AppShell, type NavItem } from "@/components/AppShell";
 import {
+  Bell,
   CirclePlus,
   LayoutDashboard,
   GraduationCap,
@@ -37,6 +38,7 @@ const nav: NavItem[] = [
     ],
   },
   { to: "/admin/reports", label: "Reports", icon: FileBarChart },
+  { to: "/admin/notifications", label: "Notifications", icon: Bell },
   { to: "/admin/audit", label: "Audit trail", icon: History },
   { to: "/admin/settings", label: "Branding", icon: Settings2 },
   { to: "/settings", label: "Settings", icon: Settings },

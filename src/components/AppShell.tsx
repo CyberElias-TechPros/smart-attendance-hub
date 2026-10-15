@@ -9,6 +9,8 @@ import { Avatar } from "./Avatar";
 import { AnimatedNumber } from "./AnimatedNumber";
 import { CommandPalette, PaletteTrigger, type PaletteNavItem } from "./CommandPalette";
 import { PeriodSelector } from "./PeriodSelector";
+import { useQuery } from "@tanstack/react-query";
+import { notificationSummaryQO } from "@/lib/queries";
 import { useSiteSettings } from "@/lib/useSiteSettings";
 import {
   DropdownMenu,
@@ -74,6 +76,9 @@ export function AppShell({
 
   const isAdmin = role.toLowerCase().startsWith("admin");
   const institutionName = settings?.institutionName ?? "SLAMS";
+  // Unread badge: a polled COUNT, not a socket per tab (see notificationSummaryQO).
+  const { data: unreadData } = useQuery({ ...notificationSummaryQO, enabled: isAdmin });
+  const unread = unreadData?.unread ?? 0;
 
   // A group is open if the user opened it, or if the current route lives inside
   // it — so a deep link (or the palette) leaves the sidebar in a sensible state.
@@ -301,9 +306,16 @@ export function AppShell({
               <Link
                 to={isAdmin ? "/admin/notifications" : "/settings"}
                 className="relative grid h-9 w-9 place-items-center rounded-lg border border-border/70 bg-card/60 text-muted-foreground transition hover:text-foreground"
-                aria-label="Notifications"
+                aria-label={
+                  unread > 0 ? `Notifications, ${unread} unread` : "Notifications, nothing unread"
+                }
               >
                 <Bell className="h-4 w-4" />
+                {unread > 0 && (
+                  <span className="absolute -right-1.5 -top-1.5 grid h-4 min-w-4 place-items-center rounded-full bg-destructive px-1 text-[10px] font-semibold text-destructive-foreground">
+                    {unread > 9 ? "9+" : unread}
+                  </span>
+                )}
               </Link>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>

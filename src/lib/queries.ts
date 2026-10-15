@@ -15,6 +15,7 @@ import {
   courses,
   departments,
   faculties,
+  notifications,
   reports,
   sessions,
   settings,
@@ -140,6 +141,29 @@ export const auditQO = (query: Record<string, string | number | undefined> = {})
     queryKey: ["audit", query],
     queryFn: () => audit.list(query as Parameters<typeof audit.list>[0]),
   });
+
+// ─── Notifications (plan §4.5 / P4.5) ───────────────────────────────────────
+
+export const notificationsQO = (opts: { page?: number; unreadOnly?: boolean } = {}) =>
+  queryOptions({
+    queryKey: ["notifications", opts],
+    queryFn: () => notifications.list(opts),
+    placeholderData: keepPreviousData,
+  });
+
+/**
+ * Unread badge. Polled rather than pushed: at this scale one cheap COUNT every
+ * 30 s costs far less than a socket per tab, and the badge is allowed to be
+ * half a minute stale. `refetchIntervalInBackground: false` keeps a forgotten
+ * tab quiet.
+ */
+export const notificationSummaryQO = queryOptions({
+  queryKey: ["notifications", "summary"],
+  queryFn: () => notifications.summary(),
+  refetchInterval: 30_000,
+  refetchIntervalInBackground: false,
+  staleTime: 15_000,
+});
 
 export const usersQO = (role?: Role) =>
   queryOptions({

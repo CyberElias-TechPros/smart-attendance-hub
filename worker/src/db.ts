@@ -44,6 +44,9 @@ import type {
   ReportFilters,
   Semester,
   AuditEntry,
+  Notification,
+  NotificationsPage,
+  NotifyInput,
   AuditQuery,
   Paginated,
   FacultyReport,
@@ -2352,6 +2355,203 @@ export class Repo {
   }
 
   /** Read the trail (newest first). Read-only by design. */
+  // ── Notifications (plan §4.5 / P4.5) ─────────────────────────────────────
+  //
+  // One row per recipient. Recipient lists are always resolved from the
+  // database (enrolments, roles) rather than trusted from the request, so a
+  // lecturer cannot address a broadcast to a course they do not own.
+
+  private rowToNotification(r: Row): Notification {
+    return {
+      id: str(r.id),
+      userId: str(r.user_id),
+      audience: str(r.audience),
+      role: optStr(r.role),
+      kind: str(r.kind),
+      title: str(r.title),
+      body: optStr(r.body),
+      entityType: optStr(r.entity_type),
+      entityId: optStr(r.entity_id),
+      href: optStr(r.href),
+      courseId: optStr(r.course_id),
+      semesterId: optStr(r.semester_id),
+      readAt: r.read_at == null ? undefined : num(r.read_at),
+      createdAt: num(r.created_at),
+    };
+  }
+
+  /** Resolve an audience to the user ids that should receive a row. */
+  private async recipientsFor(
+    audience: NotifyInput["audience"],
+  ): Promise<Array<{ id: string; role?: string; audience: string }>> {
+    switch (audience.kind) {
+      case "user": {
+        const row = await this.first<Row>("SELECT id, role FROM users WHERE id = ?", [
+          audience.userId,
+        ]);
+        return row ? [{ id: str(row.id), role: optStr(row.role), audience: "user" }] : [];
+      }
+      case "users": {
+        if (audience.userIds.length === 0) return [];
+        const marks = audience.userIds.map(() => "?").join(",");
+        const rows = await this.all<Row>(
+          `SELECT id, role FROM users WHERE id IN (${marks})`,
+          audience.userIds,
+        );
+        return rows.map((r) => ({ id: str(r.id), role: optStr(r.role), audience: "user" }));
+      }
+      case "course": {
+        // Enrolled students only: lecturing staff get role-addressed notices so
+        // one event never writes two rows for the same person.
+        const rows = await this.all<Row>(
+          "SELECT student_id AS id FROM course_enrollments WHERE course_id = ?",
+          [audience.courseId],
+        );
+        return rows.map((r) => ({ id: str(r.id), audience: "course" }));
+      }
+      case "role": {
+        const rows = await this.all<Row>("SELECT id, role FROM users WHERE role = ?", [
+          audience.role,
+        ]);
+        return rows.map((r) => ({ id: str(r.id), role: optStr(r.role), audience: "role" }));
+      }
+      case "admins": {
+        const rows = await this.all<Row>(
+          "SELECT id, role FROM users WHERE role IN ('admin','hod')",
+        );
+        return rows.map((r) => ({ id: str(r.id), role: optStr(r.role), audience: "admin" }));
+      }
+    }
+  }
+
+  /**
+   * Write one inbox row per recipient. Chunked by the D1 parameter budget
+   * (100 bound variables) rather than by a row count, so widening this table
+   * cannot silently break a broadcast to a 428-student course.
+   */
+  async notify(input: NotifyInput): Promise<number> {
+    const recipients = await this.recipientsFor(input.audience);
+    const skip = new Set(input.except ?? []);
+    const seen = new Set<string>();
+    const targets = recipients.filter((r) => {
+      if (skip.has(r.id) || seen.has(r.id)) return false;
+      seen.add(r.id);
+      return true;
+    });
+    if (targets.length === 0) return 0;
+    const createdAt = input.createdAt ?? Date.now();
+    const columns = [
+      "id",
+      "user_id",
+      "audience",
+      "role",
+      "kind",
+      "title",
+      "body",
+      "entity_type",
+      "entity_id",
+      "href",
+      "course_id",
+      "semester_id",
+      "created_at",
+    ];
+    const perStatement = Math.max(1, Math.floor(90 / columns.length));
+    const placeholders = `(${columns.map(() => "?").join(", ")})`;
+    for (let i = 0; i < targets.length; i += perStatement) {
+      const slice = targets.slice(i, i + perStatement);
+      const sql = `INSERT OR IGNORE INTO notifications (${columns.join(", ")}) VALUES ${slice
+        .map(() => placeholders)
+        .join(", ")}`;
+      const values = slice.flatMap((r) => [
+        nanoid(12),
+        r.id,
+        r.audience,
+        r.role ?? null,
+        input.kind,
+        input.title,
+        input.body ?? null,
+        input.entityType ?? null,
+        input.entityId ?? null,
+        input.href ?? null,
+        input.courseId ?? null,
+        input.semesterId ?? null,
+        createdAt,
+      ]);
+      await this.db
+        .prepare(sql)
+        .bind(...values)
+        .run();
+    }
+    return targets.length;
+  }
+
+  async notificationsFor(
+    userId: string,
+    opts: { page?: number; pageSize?: number; unreadOnly?: boolean } = {},
+  ): Promise<NotificationsPage> {
+    const page = Math.max(1, Math.floor(opts.page ?? 1));
+    const pageSize = Math.min(100, Math.max(1, Math.floor(opts.pageSize ?? 30)));
+    const where = ["user_id = ?"];
+    const params: unknown[] = [userId];
+    if (opts.unreadOnly) where.push("read_at IS NULL");
+    const clause = `WHERE ${where.join(" AND ")}`;
+    const total =
+      (await this.first<{ c: number }>(`SELECT COUNT(*) AS c FROM notifications ${clause}`, params))
+        ?.c ?? 0;
+    const rows = await this.all<Row>(
+      `SELECT * FROM notifications ${clause} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+      [...params, pageSize, (page - 1) * pageSize],
+    );
+    return {
+      items: rows.map((r) => this.rowToNotification(r)),
+      unread: await this.unreadNotificationCount(userId),
+      total,
+    };
+  }
+
+  async unreadNotificationCount(userId: string): Promise<number> {
+    return (
+      (
+        await this.first<{ c: number }>(
+          "SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND read_at IS NULL",
+          [userId],
+        )
+      )?.c ?? 0
+    );
+  }
+
+  /** Mark one row read. Returns false when it is not this user's row. */
+  async markNotificationRead(userId: string, id: string, at = Date.now()): Promise<boolean> {
+    const row = await this.first<Row>(
+      "SELECT id, read_at FROM notifications WHERE id = ? AND user_id = ?",
+      [id, userId],
+    );
+    if (!row) return false;
+    if (row.read_at != null) return true;
+    await this.run("UPDATE notifications SET read_at = ? WHERE id = ? AND user_id = ?", [
+      at,
+      id,
+      userId,
+    ]);
+    return true;
+  }
+
+  async markAllNotificationsRead(userId: string, at = Date.now()): Promise<number> {
+    const before =
+      (
+        await this.first<{ c: number }>(
+          "SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND read_at IS NULL",
+          [userId],
+        )
+      )?.c ?? 0;
+    if (before === 0) return 0;
+    await this.run("UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL", [
+      at,
+      userId,
+    ]);
+    return before;
+  }
+
   async listAudit(query: AuditQuery = {}): Promise<Paginated<AuditEntry>> {
     const page = Math.max(1, Math.floor(query.page ?? 1));
     const pageSize = Math.min(200, Math.max(1, Math.floor(query.pageSize ?? 50)));

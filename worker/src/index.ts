@@ -1036,6 +1036,18 @@ const routes: Route[] = [
         reason: data.reason,
         allowLocked: Boolean(data.override && ctx.user.role === "admin"),
       });
+      if (record.studentId && record.studentId !== ctx.user.id) {
+        await ctx.repo.notify({
+          audience: { kind: "user", userId: record.studentId },
+          kind: "attendance.voided",
+          title: "An attendance record was withdrawn",
+          body: `${ctx.user.name} withdrew your ${record.status} mark. Reason: ${data.reason}`,
+          entityType: "attendance_record",
+          entityId: p[0],
+          href: `/student/courses/${record.courseId}`,
+          courseId: record.courseId,
+        });
+      }
       return jsonOk({ ok: true, removed });
     },
   },
@@ -1058,6 +1070,21 @@ const routes: Route[] = [
         reason: data.reason,
         allowLocked: ctx.user.role === "admin",
       });
+      // The student is told about the change to *their* record, with the reason
+      // and who decided it — an unnoticed correction is indistinguishable from
+      // a silent one (brief §9).
+      if (record.studentId && record.studentId !== ctx.user.id) {
+        await ctx.repo.notify({
+          audience: { kind: "user", userId: record.studentId },
+          kind: "attendance.corrected",
+          title: `Attendance updated to ${data.status}`,
+          body: `${ctx.user.name} changed your ${record.status} mark to ${data.status}. Reason: ${data.reason}`,
+          entityType: "attendance_record",
+          entityId: p[0],
+          href: `/student/courses/${record.courseId}`,
+          courseId: record.courseId,
+        });
+      }
       return jsonOk({ record: updated });
     },
   },
@@ -1452,6 +1479,54 @@ const routes: Route[] = [
     },
   },
 
+  // ── Notifications (plan §4.5 / P4.5) ──
+  {
+    // Scoped to the caller by construction: there is no way to read somebody
+    // else's inbox, which is why no role list is needed here.
+    method: "GET",
+    pattern: /^\/api\/notifications$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer", "student"]);
+      const url = new URL(req.url);
+      return jsonOk(
+        await ctx.repo.notificationsFor(ctx.user.id, {
+          page: url.searchParams.get("page") ? Number(url.searchParams.get("page")) : undefined,
+          pageSize: url.searchParams.get("pageSize")
+            ? Number(url.searchParams.get("pageSize"))
+            : undefined,
+          unreadOnly: url.searchParams.get("unreadOnly") === "1",
+        }),
+      );
+    },
+  },
+  {
+    // The bell polls this, so it stays deliberately tiny.
+    method: "GET",
+    pattern: /^\/api\/notifications\/summary$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer", "student"]);
+      return jsonOk({ unread: await ctx.repo.unreadNotificationCount(ctx.user.id) });
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/notifications\/read-all$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer", "student"]);
+      return jsonOk({ marked: await ctx.repo.markAllNotificationsRead(ctx.user.id) });
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/notifications\/([^/]+)\/read$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer", "student"]);
+      const ok = await ctx.repo.markNotificationRead(ctx.user.id, p[0]);
+      if (!ok) throw new ApiError(404, "not_found", "Notification not found");
+      return jsonOk({ ok: true });
+    },
+  },
+
   // ── Audit trail (read-only by design — plan §4.6) ──
   {
     method: "GET",
@@ -1489,6 +1564,21 @@ const routes: Route[] = [
         },
         auditCtx(req, base, ctx.user),
       );
+      // A finished export is an event the requester may have walked away from:
+      // the bell is where they find out it is ready (and what it contained).
+      await ctx.repo.notify({
+        audience: { kind: "user", userId: ctx.user.id },
+        kind: "export.ready",
+        title: `${data.format.toUpperCase()} export ready — ${data.scope}`,
+        body:
+          data.rowCount != null
+            ? `${data.rowCount} row(s) included. Filters: ${data.title ?? "none"}.`
+            : `Filters: ${data.title ?? "none"}.`,
+        entityType: "report",
+        entityId: data.courseId ?? null,
+        href: "/admin/reports",
+        courseId: data.courseId ?? null,
+      });
       return jsonOk({ ok: true });
     },
   },

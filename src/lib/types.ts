@@ -468,6 +468,59 @@ export interface CourseSessionStat {
 
 // ── Audit trail (plan §4.6) ────────────────────────────────────────────────
 
+// ─── Notifications (plan §4.5 / P4.5) ──────────────────────────────────────
+//
+// One row per recipient, written by `Repo.notify()`. `audience` records *why*
+// somebody received a row, which is what lets the inbox distinguish a message
+// addressed to one person from a course-wide or role-wide broadcast.
+
+export interface Notification {
+  id: string;
+  userId: string;
+  audience: string;
+  role?: string;
+  kind: string;
+  title: string;
+  body?: string;
+  entityType?: string;
+  entityId?: string;
+  href?: string;
+  courseId?: string;
+  semesterId?: string;
+  readAt?: number;
+  createdAt: number;
+}
+
+export interface NotificationsPage {
+  items: Notification[];
+  unread: number;
+  total: number;
+}
+
+/** Who receives a notification. Resolved server-side, never by the caller. */
+export type NotifyAudience =
+  | { kind: "user"; userId: string }
+  | { kind: "users"; userIds: string[] }
+  | { kind: "course"; courseId: string }
+  | { kind: "role"; role: Role }
+  | { kind: "admins" };
+
+export interface NotifyInput {
+  audience: NotifyAudience;
+  kind: string;
+  title: string;
+  body?: string | null;
+  entityType?: string | null;
+  entityId?: string | null;
+  href?: string | null;
+  courseId?: string | null;
+  semesterId?: string | null;
+  /** User ids to skip (typically whoever caused the event). */
+  except?: string[];
+  /** Injectable clock, so tests can pin `created_at` and ordering. */
+  createdAt?: number;
+}
+
 export interface AuditEntry {
   id: string;
   actorId?: string;
