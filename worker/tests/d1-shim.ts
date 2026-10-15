@@ -50,6 +50,26 @@ export function createD1Shim(): D1Shim {
       };
       return self;
     },
+    /**
+     * D1's batched write: every statement runs inside one transaction, so a
+     * failure leaves the database untouched. The imports rely on this for their
+     * "nothing partially applied" guarantee, and without it here the tests would
+     * have proved a weaker property than production provides.
+     */
+    async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<T[]> {
+      raw.exec("BEGIN");
+      try {
+        const out: T[] = [];
+        for (const statement of statements) {
+          out.push((await statement.run()) as T);
+        }
+        raw.exec("COMMIT");
+        return out;
+      } catch (error) {
+        raw.exec("ROLLBACK");
+        throw error;
+      }
+    },
   };
 
   return { db, raw, close: () => raw.close() };

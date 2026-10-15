@@ -21,6 +21,7 @@ import {
   Settings2,
   Trophy,
   Tags,
+  Upload,
 } from "lucide-react";
 
 // The brief's sidebar. "Courses" is the expandable group: clicking the label
@@ -47,6 +48,7 @@ const nav: NavItem[] = [
   { to: "/admin/results", label: "Results", icon: Trophy },
   { to: "/admin/notifications", label: "Notifications", icon: Bell },
   { to: "/admin/reports", label: "Reports", icon: FileBarChart },
+  { to: "/admin/imports", label: "Imports", icon: Upload },
   { to: "/admin/audit", label: "Audit trail", icon: History },
   { to: "/admin/settings", label: "Branding", icon: Settings2 },
   { to: "/settings", label: "Settings", icon: Settings },

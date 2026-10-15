@@ -16,6 +16,14 @@ import {
 } from "./auth";
 import { getRepo, type D1Database } from "./db";
 import { hashedPointer } from "./audit";
+import {
+  applyImport,
+  previewImport,
+  templateColumns,
+  type ImportApplyResult,
+  type ImportKind,
+} from "./import";
+import { toCsv } from "../../shared/csv";
 import { recordAudit, type AuditContext } from "./audit-log";
 import { BusinessError } from "./errors";
 import { ApiError, clientIp, jsonError, jsonOk, readJsonBody } from "./http";
@@ -433,6 +441,14 @@ const resultsSchema = z.object({
     )
     .min(1)
     .max(1000),
+});
+
+const importSchema = z.object({
+  kind: z.enum(["students", "lecturers", "enrollments", "results"]),
+  csv: z.string().min(1).max(2_000_000),
+  courseId: idSchema.optional(),
+  examId: idSchema.optional(),
+  defaultPassword: z.string().trim().min(8).max(72).optional(),
 });
 
 const snapshotSchema = z.object({
@@ -1808,6 +1824,100 @@ const routes: Route[] = [
       const analytics = await ctx.repo.resultAnalytics(p[0], filters);
       if (!analytics) throw new ApiError(404, "not_found", "Course not found");
       return jsonOk(analytics);
+    },
+  },
+
+  // ── Bulk import (plan P5.4 / decision D8) ──
+  {
+    // A downloadable template, so the registrar's file matches the importer
+    // rather than the importer guessing at theirs.
+    method: "GET",
+    pattern: /^\/api\/import\/template$/,
+    handler: async (req, _p, base) => {
+      await needAuth(req, base, ["admin", "lecturer"]);
+      const kind = (new URL(req.url).searchParams.get("kind") ?? "students") as ImportKind;
+      if (!["students", "lecturers", "enrollments", "results"].includes(kind)) {
+        throw new ApiError(400, "validation_error", "Unknown import kind");
+      }
+      const header = templateColumns(kind);
+      const sample: Record<ImportKind, string[][]> = {
+        students: [["Ada Obi", "ada.obi@slams.edu", "CSC/22/0001", "CSC", "200"]],
+        lecturers: [["Dr. Grace Adeyemi", "grace.adeyemi@slams.edu", "STF/0007", "EEE"]],
+        enrollments: [["CSC/22/0001"], ["CSC/22/0002"]],
+        results: [
+          ["CSC/22/0001", "68"],
+          ["CSC/22/0002", "54"],
+        ],
+      };
+      const body = toCsv(header, sample[kind]);
+      return new Response(body, {
+        headers: {
+          "content-type": "text/csv; charset=utf-8",
+          "content-disposition": `attachment; filename="slams-${kind}-template.csv"`,
+          ...corsHeaders(base.origin, allowedOrigins(base.env)),
+        },
+      });
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/import\/preview$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      const data = await bodyOf(req, importSchema);
+      if (data.courseId) await requireCourseOwnership(ctx.repo, ctx.user, data.courseId);
+      if (data.examId) {
+        const exam = await ctx.repo.getExam(data.examId);
+        if (!exam) throw new ApiError(404, "not_found", "Exam not found");
+        await requireCourseOwnership(ctx.repo, ctx.user, exam.courseId);
+      }
+      return jsonOk(await previewImport(ctx.repo, data));
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/import\/apply$/,
+    handler: async (req, _p, base) => {
+      // Creating accounts is an administrative action: a lecturer may import
+      // marks for their own course, but not people.
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      const data = await bodyOf(req, importSchema);
+      if (data.kind !== "results" && ctx.user.role !== "admin") {
+        throw new ApiError(
+          403,
+          "forbidden",
+          "Only an administrator can import people or enrolments",
+        );
+      }
+      if (data.courseId) await requireCourseOwnership(ctx.repo, ctx.user, data.courseId);
+      if (data.examId) {
+        const exam = await ctx.repo.getExam(data.examId);
+        if (!exam) throw new ApiError(404, "not_found", "Exam not found");
+        await requireCourseOwnership(ctx.repo, ctx.user, exam.courseId);
+      }
+      let result: ImportApplyResult;
+      try {
+        result = await applyImport(ctx.repo, data);
+      } catch (error) {
+        throw new ApiError(
+          400,
+          "validation_error",
+          error instanceof Error ? error.message : "The import could not be applied",
+        );
+      }
+      await recordAudit(
+        ctx.repo,
+        {
+          action: "import.apply",
+          entityType: "import",
+          entityId: data.kind,
+          courseId: data.courseId ?? null,
+          after: result,
+          reason: `${data.kind}: ${result.created} created, ${result.linked} linked, ${result.skipped} skipped`,
+        },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk(result);
     },
   },
 

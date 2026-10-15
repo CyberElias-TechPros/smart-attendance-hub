@@ -25,6 +25,10 @@ import type {
   Exam,
   ExamKind,
   ExamResult,
+  ImportApplyResult,
+  ImportInput,
+  ImportKind,
+  ImportPreview,
   FacultyReport,
   NotificationsPage,
   ResultAnalytics,
@@ -610,6 +614,44 @@ export const reports = {
   faculty: () => request<FacultyReport>("/api/reports/faculty"),
   adminOverview: () => request<AdminOverview>("/api/admin/overview"),
 };
+
+// ─── Bulk import (plan P5.4 / decision D8) ───────────────────────────────────
+
+/**
+ * CSV imports run in two steps on purpose: `preview` validates the whole file
+ * against the live database and reports every row with its file line number, and
+ * `apply` re-validates before writing anything. An error row stops the file.
+ */
+export const imports = {
+  preview: (input: ImportInput) =>
+    request<ImportPreview>("/api/import/preview", { method: "POST", body: input }),
+  apply: (input: ImportInput) =>
+    request<ImportApplyResult>("/api/import/apply", { method: "POST", body: input }),
+};
+
+/**
+ * Templates are served behind the session, so a plain `<a href>` cannot fetch
+ * them — the file is downloaded with the token and handed to the browser as a
+ * blob. Failure is thrown rather than swallowed: the user asked for a file.
+ */
+export async function downloadImportTemplate(kind: ImportKind): Promise<void> {
+  const token = getToken();
+  const res = await fetch(`${API_URL}/api/import/template?kind=${encodeURIComponent(kind)}`, {
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, "error", "The template could not be downloaded");
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `slams-${kind}-template.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
 
 // ─── Settings ─────────────────────────────────────────────────────────────
 

@@ -710,3 +710,47 @@ export interface Paginated<T> {
   page: number;
   pageSize: number;
 }
+
+// ─── Bulk CSV import (plan P5.4 / decision D8) ───────────────────────────────
+
+export type ImportKind = "students" | "lecturers" | "enrollments" | "results";
+
+export interface ImportRowReport {
+  /** 1-based line in the uploaded file, so a report can be pointed at the row. */
+  line: number;
+  /** The row's identifying value (name / email / matric number). */
+  label: string;
+  /** `duplicate` rows are skipped, not rejected — that is what makes a re-run safe. */
+  status: "ok" | "error" | "duplicate";
+  message?: string;
+}
+
+export interface ImportPreview {
+  kind: ImportKind;
+  /** Columns the file actually had. */
+  header: string[];
+  /** Columns the importer expects. */
+  expected: string[];
+  rows: ImportRowReport[];
+  summary: { total: number; valid: number; errors: number; duplicates: number };
+  /** True when `apply` will be accepted — no hard errors, and something to do. */
+  ready: boolean;
+}
+
+export interface ImportApplyResult {
+  kind: ImportKind;
+  created: number;
+  linked: number;
+  updated: number;
+  skipped: number;
+}
+
+export interface ImportInput {
+  kind: ImportKind;
+  csv: string;
+  /** Enrolments, marks: the course/exam the file is applied to. */
+  courseId?: string;
+  examId?: string;
+  /** Optional: give imported people this password instead of a generated one. */
+  defaultPassword?: string;
+}

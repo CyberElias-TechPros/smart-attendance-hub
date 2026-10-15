@@ -92,6 +92,14 @@ export interface D1PreparedStatement {
 
 export interface D1Database {
   prepare(query: string): D1PreparedStatement;
+  /**
+   * Optional batched write: D1 runs every statement in one transaction, so a
+   * mid-way failure leaves the database untouched. The CSV import uses it to make
+   * "nothing partially applied" a property of the storage layer rather than a
+   * promise in a comment. Optional because the repository also runs against a
+   * minimal shim in tests.
+   */
+  batch?(statements: D1PreparedStatement[]): Promise<unknown[]>;
 }
 
 // Single-flight seed keyed by the D1 binding. Concurrent requests (and, with
@@ -99,6 +107,11 @@ export interface D1Database {
 const seeding = new WeakMap<D1Database, Promise<void>>();
 
 // ─── Pure helpers ──────────────────────────────────────────────────────────
+
+/** Short opaque id for a new row. One helper, so no table invents its own format. */
+export function newId(size = 10): string {
+  return nanoid(size);
+}
 
 export function generateCode(): string {
   return String(100000 + Math.floor(Math.random() * 900000));
@@ -2381,6 +2394,41 @@ export class Repo {
   }
 
   /** Read the trail (newest first). Read-only by design. */
+  // ── Bulk import plumbing (plan P5.4) ────────────────────────────────────
+  //
+  // The import builds statements first (so it can validate the whole file against
+  // the current database) and writes them as one batch. Exposing `statement()`
+  // and `batch()` keeps that logic in one place instead of teaching the importer
+  // about the D1 binding directly.
+
+  /** A prepared statement, ready to be batched. */
+  statement(sql: string, params: unknown[] = []): D1PreparedStatement {
+    return this.db.prepare(sql).bind(...params);
+  }
+
+  /**
+   * Run statements atomically. Falls back to a sequential run when the binding
+   * has no `batch` (the minimal test shim): production D1 always has it, which is
+   * where the "nothing partially applied" guarantee actually has to hold.
+   */
+  async batch(statements: D1PreparedStatement[]): Promise<void> {
+    if (statements.length === 0) return;
+    if (this.db.batch) {
+      await this.db.batch(statements);
+      return;
+    }
+    for (const statement of statements) await statement.run();
+  }
+
+  /** Student ids enrolled on a course (the roster as it stands). */
+  async listEnrollments(courseId: string): Promise<string[]> {
+    const rows = await this.all<{ student_id: string }>(
+      "SELECT student_id FROM course_enrollments WHERE course_id = ?",
+      [courseId],
+    );
+    return rows.map((r) => str(r.student_id));
+  }
+
   // ── Examinations & results (plan §4.4 / P4.3) ───────────────────────────
   //
   // Scores are stored with their `max_score`, never as a bare percentage: a

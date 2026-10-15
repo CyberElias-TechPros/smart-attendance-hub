@@ -30,6 +30,7 @@ import { Route as AdminResultsRouteImport } from './routes/admin.results'
 import { Route as AdminReportsRouteImport } from './routes/admin.reports'
 import { Route as AdminNotificationsRouteImport } from './routes/admin.notifications'
 import { Route as AdminLecturersRouteImport } from './routes/admin.lecturers'
+import { Route as AdminImportsRouteImport } from './routes/admin.imports'
 import { Route as AdminFacultiesRouteImport } from './routes/admin.faculties'
 import { Route as AdminExaminationsRouteImport } from './routes/admin.examinations'
 import { Route as AdminDepartmentsRouteImport } from './routes/admin.departments'
@@ -150,6 +151,11 @@ const AdminLecturersRoute = AdminLecturersRouteImport.update({
   path: '/lecturers',
   getParentRoute: () => AdminRoute,
 } as any)
+const AdminImportsRoute = AdminImportsRouteImport.update({
+  id: '/imports',
+  path: '/imports',
+  getParentRoute: () => AdminRoute,
+} as any)
 const AdminFacultiesRoute = AdminFacultiesRouteImport.update({
   id: '/faculties',
   path: '/faculties',
@@ -236,6 +242,7 @@ export interface FileRoutesByFullPath {
   '/admin/departments': typeof AdminDepartmentsRoute
   '/admin/examinations': typeof AdminExaminationsRoute
   '/admin/faculties': typeof AdminFacultiesRoute
+  '/admin/imports': typeof AdminImportsRoute
   '/admin/lecturers': typeof AdminLecturersRoute
   '/admin/notifications': typeof AdminNotificationsRoute
   '/admin/reports': typeof AdminReportsRoute
@@ -269,6 +276,7 @@ export interface FileRoutesByTo {
   '/admin/departments': typeof AdminDepartmentsRoute
   '/admin/examinations': typeof AdminExaminationsRoute
   '/admin/faculties': typeof AdminFacultiesRoute
+  '/admin/imports': typeof AdminImportsRoute
   '/admin/lecturers': typeof AdminLecturersRoute
   '/admin/notifications': typeof AdminNotificationsRoute
   '/admin/reports': typeof AdminReportsRoute
@@ -307,6 +315,7 @@ export interface FileRoutesById {
   '/admin/departments': typeof AdminDepartmentsRoute
   '/admin/examinations': typeof AdminExaminationsRoute
   '/admin/faculties': typeof AdminFacultiesRoute
+  '/admin/imports': typeof AdminImportsRoute
   '/admin/lecturers': typeof AdminLecturersRoute
   '/admin/notifications': typeof AdminNotificationsRoute
   '/admin/reports': typeof AdminReportsRoute
@@ -346,6 +355,7 @@ export interface FileRouteTypes {
     | '/admin/departments'
     | '/admin/examinations'
     | '/admin/faculties'
+    | '/admin/imports'
     | '/admin/lecturers'
     | '/admin/notifications'
     | '/admin/reports'
@@ -379,6 +389,7 @@ export interface FileRouteTypes {
     | '/admin/departments'
     | '/admin/examinations'
     | '/admin/faculties'
+    | '/admin/imports'
     | '/admin/lecturers'
     | '/admin/notifications'
     | '/admin/reports'
@@ -416,6 +427,7 @@ export interface FileRouteTypes {
     | '/admin/departments'
     | '/admin/examinations'
     | '/admin/faculties'
+    | '/admin/imports'
     | '/admin/lecturers'
     | '/admin/notifications'
     | '/admin/reports'
@@ -599,6 +611,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminLecturersRouteImport
       parentRoute: typeof AdminRoute
     }
+    '/admin/imports': {
+      id: '/admin/imports'
+      path: '/imports'
+      fullPath: '/admin/imports'
+      preLoaderRoute: typeof AdminImportsRouteImport
+      parentRoute: typeof AdminRoute
+    }
     '/admin/faculties': {
       id: '/admin/faculties'
       path: '/faculties'
@@ -727,6 +746,7 @@ interface AdminRouteChildren {
   AdminDepartmentsRoute: typeof AdminDepartmentsRoute
   AdminExaminationsRoute: typeof AdminExaminationsRoute
   AdminFacultiesRoute: typeof AdminFacultiesRoute
+  AdminImportsRoute: typeof AdminImportsRoute
   AdminLecturersRoute: typeof AdminLecturersRoute
   AdminNotificationsRoute: typeof AdminNotificationsRoute
   AdminReportsRoute: typeof AdminReportsRoute
@@ -744,6 +764,7 @@ const AdminRouteChildren: AdminRouteChildren = {
   AdminDepartmentsRoute: AdminDepartmentsRoute,
   AdminExaminationsRoute: AdminExaminationsRoute,
   AdminFacultiesRoute: AdminFacultiesRoute,
+  AdminImportsRoute: AdminImportsRoute,
   AdminLecturersRoute: AdminLecturersRoute,
   AdminNotificationsRoute: AdminNotificationsRoute,
   AdminReportsRoute: AdminReportsRoute,
