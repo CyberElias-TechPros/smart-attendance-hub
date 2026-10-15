@@ -172,4 +172,34 @@ describe("demo seed", () => {
       .get() as { c: number };
     expect(overMax.c).toBe(0);
   });
+
+  it("produces the same dataset on every machine", async () => {
+    // The whole demo (attendance rolls and, through the tallies, the marks) comes
+    // from one seeded PRNG. Screenshots, docs and support conversations only stay
+    // true if two runs agree, so this compares two independent seeds rather than
+    // trusting the comment. Timestamps are excluded on purpose: the dataset is
+    // anchored to "now", so two runs seconds apart legitimately differ there.
+    const fingerprint = async () => {
+      const local = createD1Shim();
+      applyMigrations(local.raw);
+      await seedD1(local.db);
+      const rows = local.raw
+        .prepare(
+          `SELECT
+             (SELECT COUNT(*) FROM attendance_records) AS records,
+             (SELECT COUNT(*) FROM attendance_records WHERE status = 'late') AS late,
+             (SELECT COUNT(*) FROM sessions) AS sessions,
+             (SELECT ROUND(SUM(score), 2) FROM results WHERE score IS NOT NULL) AS marks,
+             (SELECT COUNT(DISTINCT SUBSTR(grade, 1, 1)) FROM results) AS grades`,
+        )
+        .get() as Record<string, number>;
+      local.close();
+      return rows;
+    };
+    const first = await fingerprint();
+    const second = await fingerprint();
+    expect(second).toEqual(first);
+    expect(first.sessions).toBeGreaterThan(100);
+    expect(first.marks).toBeGreaterThan(0);
+  });
 });

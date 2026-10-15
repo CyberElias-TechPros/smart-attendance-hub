@@ -17,7 +17,11 @@ import type { D1Database } from "./db";
 import { zonedDayStart } from "./time";
 
 /** Deterministic PRNG (mulberry32): the demo dataset is identical on every
- *  machine, so screenshots, docs and support conversations all match. */
+ *  machine, so screenshots, docs and support conversations all match — including
+ *  the attendance rates and, because the seeded marks are derived from them, the
+ *  marks on the Results page. Every random value inside `seedD1` comes from here;
+ *  runtime code that genuinely wants entropy (session codes, device ids) keeps
+ *  using `Math.random()`. */
 function rng(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -1177,7 +1181,7 @@ export async function seedD1(db: D1Database): Promise<void> {
     const reliability = new Map(
       enrolled.map((student) => [
         student.id,
-        course.reliability[0] + Math.random() * (course.reliability[1] - course.reliability[0]),
+        course.reliability[0] + random() * (course.reliability[1] - course.reliability[0]),
       ]),
     );
 
@@ -1188,7 +1192,7 @@ export async function seedD1(db: D1Database): Promise<void> {
       // while nothing lands in the future.
       const started = now - (lecture * 3.5 + 1) * day;
       const sessionId = id(10);
-      const code = String(100000 + Math.floor(Math.random() * 900000));
+      const code = String(100000 + Math.floor(random() * 900000));
       await db
         .prepare(
           "INSERT OR IGNORE INTO sessions (id, course_id, lecturer_id, code, started_at, expires_at, ended_at, topic, semester_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1211,8 +1215,8 @@ export async function seedD1(db: D1Database): Promise<void> {
       const rows: unknown[][] = [];
       for (const student of enrolled) {
         const p = reliability.get(student.id) ?? (rosterLo + rosterHi) / 2;
-        const roll = Math.random();
-        const offset = Math.floor(Math.random() * 12 * 60 * 1000);
+        const roll = random();
+        const offset = Math.floor(random() * 12 * 60 * 1000);
         // Sign-ins cluster in the first minutes; a fifth of arrivals are late.
         const ts = Math.round(started + (roll > 0.8 ? 12 * 60 * 1000 + offset : offset));
         noteAttendance(courseId, student.id, roll < p);
@@ -1265,7 +1269,7 @@ export async function seedD1(db: D1Database): Promise<void> {
         sessionId,
         plan.courseId,
         plan.lecturerId,
-        String(100000 + Math.floor(Math.random() * 900000)),
+        String(100000 + Math.floor(random() * 900000)),
         Math.round(started),
         Math.round(started + 30 * 60 * 1000),
         Math.round(Math.min(started + 45 * 60 * 1000, now)),
@@ -1275,7 +1279,7 @@ export async function seedD1(db: D1Database): Promise<void> {
       .run();
     for (const student of plan.roster) {
       const p = plan.reliability.get(student.id) ?? 0.8;
-      const roll = Math.random();
+      const roll = random();
       const attended = roll < p;
       const late = attended && roll > 0.82;
       noteAttendance(plan.courseId, student.id, attended);
@@ -1284,7 +1288,7 @@ export async function seedD1(db: D1Database): Promise<void> {
         sessionId,
         plan.courseId,
         student.id,
-        Math.round(started + (late ? 13 * 60 * 1000 : Math.floor(Math.random() * 8 * 60 * 1000))),
+        Math.round(started + (late ? 13 * 60 * 1000 : Math.floor(random() * 8 * 60 * 1000))),
         attended ? (late ? "late" : "present") : "absent",
         attended ? "scan" : "auto_absent",
         semesterId,

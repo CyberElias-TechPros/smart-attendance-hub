@@ -1140,6 +1140,25 @@ const routes: Route[] = [
         longitude: data.longitude ?? inherited.longitude,
         radiusMeters: data.radiusMeters ?? inherited.radiusMeters,
       });
+      // Tell the enrolled students the room is open. This is the one notification
+      // with a clock on it: the code stops working when the lecture does, so the
+      // notice goes out with the session and nowhere else. A failed notice must
+      // never fail the lecture the lecturer just started.
+      try {
+        await ctx.repo.notify({
+          audience: { kind: "course", courseId: data.courseId },
+          kind: "session.started",
+          title: `${course?.code ?? "Your lecture"} has started`,
+          body: `${ctx.user.name} opened attendance. Sign in with the code on screen.`,
+          entityType: "session",
+          entityId: session.id,
+          href: "/student/attend",
+          courseId: data.courseId,
+          semesterId: session.semesterId,
+        });
+      } catch {
+        /* the lecture matters more than the notice */
+      }
       return jsonOk(session, { status: 201 });
     },
   },
@@ -1614,6 +1633,20 @@ const routes: Route[] = [
         },
         auditCtx(req, base, ctx.user),
       );
+      // Freezing a period changes what everybody can do next (corrections are
+      // refused, the figures are fixed), so the staff who have to live with it
+      // are told by name and by label rather than discovering it by rejection.
+      await ctx.repo.notify({
+        audience: { kind: "role", role: "lecturer" },
+        kind: "semester.finalized",
+        title: `${semester.name} has been finalised`,
+        body: "Its attendance records and published figures are now frozen. Corrections need an administrator.",
+        entityType: "semester",
+        entityId: p[0],
+        href: "/admin/attendance",
+        semesterId: p[0],
+        except: [ctx.user.id],
+      });
       return jsonOk({ ...semester, snapshot: { id: snapshot.id, createdAt: snapshot.createdAt } });
     },
   },

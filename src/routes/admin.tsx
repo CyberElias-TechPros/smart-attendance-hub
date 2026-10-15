@@ -15,7 +15,6 @@ import {
   BookOpen,
   FileBarChart,
   Landmark,
-  ListTree,
   ScrollText,
   Settings,
   Settings2,
@@ -55,7 +54,6 @@ const nav: NavItem[] = [
   { to: "/admin/settings", label: "Branding", icon: Settings2 },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
-void ListTree;
 
 export const Route = createFileRoute("/admin")({
   head: () => ({

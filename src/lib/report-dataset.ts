@@ -147,7 +147,3 @@ export function averageLecturesPerStudent(dataset: ReportDataset): number | null
   const total = withLectures.reduce((a, r) => a + r.classesHeld, 0);
   return Math.round((total / withLectures.length) * 10) / 10;
 }
-
-export function averageAttendanceRate(dataset: ReportDataset): number | null {
-  return dataset.totals.rate;
-}

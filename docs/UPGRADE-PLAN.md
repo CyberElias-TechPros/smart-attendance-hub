@@ -51,7 +51,7 @@ Updated as work lands, so this document never claims more than the code does.
 | **P5.5** — Playwright E2E                                                             | ⏳ blocked                        | The browser binaries cannot be fetched in this environment; the role, import and export journeys are covered by the API test suites instead (see §11).                                                                                                                                                                                                                                                                                                |
 | **P5.6** — observability, backup runbook, guides                                      | ✅ shipped                        | `docs/ADMIN-GUIDE.md` (setup → imports → lectures → marks → grants → exports → snapshots → restore), `DEPLOY.md` v2 with the D1 Time Travel backup/restore runbook and a termly restore drill, monitoring guidance (`wrangler tail`, `/api/health`, D1 metrics), and a README that reflects the shipped feature set. The Sentry sink is deliberately not wired: no DSN is configured and the Worker's structured request log already carries `reqId`. |
 
-Gate at the time of writing: **233 tests / 22 files green** (`npx vitest run`),
+Gate at the time of writing: **234 tests / 22 files green** (`npx vitest run`),
 `npx tsc --noEmit` clean, `npx eslint .` 0 errors (11 pre-existing
 `react-refresh`/`react-hooks` warnings in the UI kit), `npx vite build` OK.
 
