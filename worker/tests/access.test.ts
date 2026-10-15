@@ -144,10 +144,15 @@ describe("granting", () => {
     const second = await grant("reports.department");
     expect(((await second.json()) as { created: boolean }).created).toBe(false);
 
-    expect(auditActions().filter((a) => a === "permission.grant")).toHaveLength(1);
-    const row = shim.raw
-      .prepare("SELECT actor_email, reason FROM audit_log WHERE action = 'permission.grant'")
-      .get() as { actor_email: string; reason: string };
+    // Scoped to this person: the seed ships two grants of its own, and those are
+    // separate acts by a separate decision — they must not be counted here.
+    const grants = shim.raw
+      .prepare(
+        "SELECT actor_email, reason FROM audit_log WHERE action = 'permission.grant' AND entity_id = ?",
+      )
+      .all(lecturer.id) as Array<{ actor_email: string; reason: string }>;
+    expect(grants).toHaveLength(1);
+    const row = grants[0];
     expect(row.actor_email).toBe("admin@slams.edu");
     expect(row.reason).toContain("Department reports");
   });
@@ -376,7 +381,8 @@ describe("multiple administrators", () => {
       body: { role: "lecturer" },
     });
     expect(down.status).toBe(200);
-    expect(auditActions().filter((a) => a === "user.role_change")).toHaveLength(2);
+    expect(auditActions().filter((a) => a === "user.role_change")).toHaveLength(2); // promote + demote, and nothing else in this suite
+
     const row = shim.raw
       .prepare("SELECT reason FROM audit_log WHERE action = 'user.role_change' LIMIT 1")
       .get() as { reason: string };
@@ -422,9 +428,9 @@ describe("revoking", () => {
 
     const revokeRow = shim.raw
       .prepare(
-        "SELECT reason FROM audit_log WHERE action = 'permission.revoke' ORDER BY created_at DESC LIMIT 1",
+        "SELECT reason FROM audit_log WHERE action = 'permission.revoke' AND entity_id = ? ORDER BY created_at DESC LIMIT 1",
       )
-      .get() as { reason: string };
+      .get(lecturer.id) as { reason: string };
     expect(revokeRow.reason).toContain("Revoked");
   });
 });

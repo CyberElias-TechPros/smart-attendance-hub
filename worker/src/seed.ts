@@ -1503,6 +1503,53 @@ export async function seedD1(db: D1Database): Promise<void> {
     ],
   );
 
+  // The two grants above really happened, so the audit trail says so in the same
+  // shape a live grant would (`recordAudit` writes these columns). An audit log
+  // that starts empty on a fresh install would be accurate but unhelpful: the
+  // page has nothing to show and no example of what an entry looks like.
+  await insertMany(
+    db,
+    "audit_log",
+    [
+      "id",
+      "actor_id",
+      "actor_role",
+      "actor_email",
+      "action",
+      "entity_type",
+      "entity_id",
+      "after_json",
+      "reason",
+      "created_at",
+    ],
+    [
+      [
+        id(10),
+        users[0].id,
+        "admin",
+        users[0].email,
+        "permission.grant",
+        "user",
+        users[3].id,
+        JSON.stringify({ permission: "reports.department" }),
+        `Granted Department reports to ${users[3].name}`,
+        now,
+      ],
+      [
+        id(10),
+        users[0].id,
+        "admin",
+        users[0].email,
+        "permission.grant",
+        "user",
+        users[4].id,
+        JSON.stringify({ permission: "audit.view" }),
+        `Granted View the audit trail to ${users[4].name}`,
+        now,
+      ],
+    ],
+  );
+
   await db
     .prepare(
       `INSERT OR IGNORE INTO site_settings (id, institution_name, at_risk_threshold, marquee_items, testimonials,
