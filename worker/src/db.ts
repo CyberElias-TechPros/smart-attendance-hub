@@ -9,14 +9,32 @@ import { nanoid } from "nanoid";
 import { BusinessError } from "./errors";
 import { dummyVerify, hashPassword, verifyPassword, type SessionPayload } from "./auth";
 import { buildLocationEvidence } from "./evidence";
+import { recordAudit, type AppendAuditInput, type AuditContext } from "./audit-log";
+import {
+  attendedCount,
+  emptyCounts,
+  expectedCount,
+  meanOfPercentages,
+  percentage,
+  percentageInt,
+  tallyStatuses,
+  weightedPercentage,
+} from "./stats";
+import { dayWindow, recentDayWindows } from "./time";
 import type {
+  Absentee,
   AdminOverview,
+  AttendanceCounts,
   AttendanceRecord,
   AttendanceSession,
   AttendanceStatus,
   Course,
   CourseReport,
+  CourseReportStudent,
   Department,
+  AuditEntry,
+  AuditQuery,
+  Paginated,
   FacultyReport,
   OpenSession,
   PublicSettings,
@@ -122,6 +140,9 @@ export function defaultSiteSettings(): SiteSettings {
     id: "site",
     institutionName: "SLAMS",
     atRiskThreshold: 70,
+    timezone: "Africa/Lagos",
+    lateCountsAsAttended: true,
+    excusedCountsAsAbsent: true,
     marqueeItems: [
       "Real-time QR check-in",
       "Fraud-resistant codes",
@@ -179,6 +200,36 @@ const str = (v: unknown): string => (v == null ? "" : String(v));
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const optStr = (v: unknown): string | undefined => (v == null ? undefined : String(v));
 const optNum = (v: unknown): number | undefined => (v == null ? undefined : Number(v));
+
+/** Who changed a record, why, and from where — threaded into every audited
+ *  mutation so an audit row can never be missing its actor (plan §9). */
+export interface AttendanceMutationOptions extends AuditContext {
+  /** Justification shown in the audit trail. The API requires it for
+   *  corrections; the repo keeps it optional so internal/system paths (absence
+   *  materialisation, imports) can still write a row. */
+  reason?: string;
+  /** Permit changing records that belong to a finalised period. */
+  allowLocked?: boolean;
+  /** Set false only for bookkeeping that should stay out of the trail. */
+  audit?: boolean;
+}
+
+/** Turn a lecture's recorded rows plus its expected-roster size into the four
+ *  independent tallies the UI and every report are built from (plan §8). */
+function sessionCounts(
+  rows: ReadonlyArray<{ status?: string | null }>,
+  expected: number,
+): AttendanceCounts {
+  const counts = tallyStatuses(rows);
+  const attended = attendedCount(counts);
+  const denom = Math.max(expected, counts.present + counts.late + counts.excused + counts.absent);
+  return {
+    ...counts,
+    attended,
+    expected: denom,
+    rate: percentage(attended, denom, 1),
+  };
+}
 
 /** Derive the lecturer-facing forensic evidence for a stored sign-in row. */
 function signInEvidenceFromRow(r: Row): SignInEvidence {
@@ -276,6 +327,7 @@ export class Repo {
       // promised behavior. NULL is impossible (column is NOT NULL DEFAULT 1).
       autoEndEnabled: r.auto_end_enabled == null ? true : !!num(r.auto_end_enabled),
       seats: optNum(r.seats),
+      semesterId: optStr(r.semester_id),
     };
   }
 
@@ -309,6 +361,11 @@ export class Repo {
       id: str(r.id),
       institutionName: str(r.institution_name),
       atRiskThreshold: num(r.at_risk_threshold),
+      timezone: optStr(r.timezone) ?? "Africa/Lagos",
+      lateCountsAsAttended:
+        r.late_counts_as_attended == null ? true : !!num(r.late_counts_as_attended),
+      excusedCountsAsAbsent:
+        r.excused_counts_as_absent == null ? true : !!num(r.excused_counts_as_absent),
       marqueeItems: safeJsonArray<string>(r.marquee_items, []),
       testimonials: safeJsonArray<Testimonial>(r.testimonials, []),
       demoAccountsEnabled: !!r.demo_accounts_enabled,
@@ -846,11 +903,22 @@ export class Repo {
       if (!ok || ok.c !== ids.length)
         throw new BusinessError("One or more enrolled students do not exist");
     }
+    // Preserve each student's original enrolment date: the UI "save roster"
+    // action re-writes the whole list, and a student's history must not be
+    // reset (nor their old absences re-attributed) just because someone added a
+    // classmate. Only genuinely new enrolments get `now`.
+    const existing = await this.all<{ student_id: string; enrolled_at: number }>(
+      "SELECT student_id, enrolled_at FROM course_enrollments WHERE course_id = ?",
+      [courseId],
+    );
+    const enrolledAt = new Map(existing.map((e) => [e.student_id, num(e.enrolled_at)]));
+    const now = Date.now();
+
     await this.run("DELETE FROM course_enrollments WHERE course_id = ?", [courseId]);
     for (const sid of ids) {
       await this.run(
-        "INSERT OR IGNORE INTO course_enrollments (course_id, student_id) VALUES (?, ?)",
-        [courseId, sid],
+        "INSERT OR IGNORE INTO course_enrollments (course_id, student_id, enrolled_at) VALUES (?, ?, ?)",
+        [courseId, sid, enrolledAt.get(sid) ?? now],
       );
     }
   }
@@ -1031,8 +1099,106 @@ export class Repo {
   async endSession(sessionId: string): Promise<void> {
     const s = await this.getSession(sessionId);
     if (!s) throw new BusinessError("Session not found");
-    if (s.endedAt) return; // idempotent
+    if (s.endedAt) {
+      // Idempotent, but still heal the roster tally in case an older close
+      // happened before absence materialisation existed (or was interrupted).
+      await this.materializeAbsences(sessionId);
+      return;
+    }
     await this.run("UPDATE sessions SET ended_at = ? WHERE id = ?", [Date.now(), sessionId]);
+    await this.materializeAbsences(sessionId);
+  }
+
+  /**
+   * Write the roster's unmet expectations for a closed lecture.
+   *
+   * Why: until this existed, "absent" was only ever implied by the absence of a
+   * row, so Present/Absent/Late could not be totalled independently and an
+   * approved excuse was indistinguishable from truancy. Every closed session
+   * now carries one row per expected student (plan §4.3).
+   *
+   * Properties:
+   *  - Only closed sessions (an open lecture has no absences yet — students can
+   *    still walk in).
+   *  - Idempotent: the UNIQUE(session_id, student_id) index (migration 0003)
+   *    plus the NOT EXISTS filter make re-runs no-ops.
+   *  - Respects enrolment dates: a student who enrolled after the lecture is not
+   *    retroactively marked absent.
+   *  - Timestamped at the lecture start, so a day-based report files the absence
+   *    under the lecture, not under whenever the session happened to auto-close.
+   *  - Batched inserts (40 rows/statement) so closing a 600-student lecture is a
+   *    handful of D1 round-trips rather than 600.
+   */
+  async materializeAbsences(sessionId: string): Promise<number> {
+    const s = await this.getSession(sessionId);
+    if (!s || !s.endedAt) return 0;
+
+    const rows = await this.all<{ student_id: string }>(
+      `SELECT ce.student_id FROM course_enrollments ce
+       WHERE ce.course_id = ?
+         AND ce.enrolled_at <= ?
+         AND NOT EXISTS (
+           SELECT 1 FROM attendance_records ar
+           WHERE ar.session_id = ? AND ar.student_id = ce.student_id
+         )
+       ORDER BY ce.student_id`,
+      [s.courseId, s.startedAt, sessionId],
+    );
+    if (rows.length === 0) return 0;
+
+    const created = s.endedAt ?? s.startedAt;
+    const BATCH = 40;
+    let inserted = 0;
+    for (let i = 0; i < rows.length; i += BATCH) {
+      const slice = rows.slice(i, i + BATCH);
+      const values = slice.map(() => "(?, ?, ?, ?, ?, 'absent', 'auto_absent', ?, ?)").join(", ");
+      const params: unknown[] = [];
+      for (const r of slice) {
+        params.push(
+          nanoid(12),
+          sessionId,
+          r.student_id,
+          s.courseId,
+          s.startedAt,
+          s.semesterId ?? null,
+          created,
+        );
+      }
+      const res = await this.db
+        .prepare(
+          `INSERT OR IGNORE INTO attendance_records
+             (id, session_id, student_id, course_id, timestamp, status, source, semester_id, created_at)
+           VALUES ${values}`,
+        )
+        .bind(...params)
+        .run();
+      inserted += Number((res.meta as { changes?: number } | undefined)?.changes ?? 0);
+    }
+    return inserted;
+  }
+
+  /**
+   * Catch-up pass for lectures that closed before their absences were written
+   * (deploy of this feature, an interrupted close, or a cron that fired while a
+   * migration was still rolling out). Bounded so a single tick can never turn
+   * into an unbounded backfill.
+   */
+  async backfillAbsences(limit = 10, sinceMs = 14 * 24 * 60 * 60 * 1000): Promise<number> {
+    const rows = await this.all<{ id: string }>(
+      `SELECT s.id FROM sessions s
+       WHERE s.ended_at IS NOT NULL
+         AND s.ended_at >= ?
+         AND EXISTS (SELECT 1 FROM course_enrollments ce WHERE ce.course_id = s.course_id)
+         AND NOT EXISTS (
+           SELECT 1 FROM attendance_records ar
+           WHERE ar.session_id = s.id AND ar.source = 'auto_absent'
+         )
+       ORDER BY s.ended_at DESC LIMIT ?`,
+      [Date.now() - sinceMs, limit],
+    );
+    let total = 0;
+    for (const r of rows) total += await this.materializeAbsences(str(r.id));
+    return total;
   }
 
   /**
@@ -1044,14 +1210,30 @@ export class Repo {
    */
   async closeExpiredSessions(): Promise<number> {
     const now = Date.now();
+    // Select first so we know *which* lectures to tally afterwards — closing a
+    // session is what turns "hasn't signed in yet" into "was absent".
+    const due = await this.all<{ id: string }>(
+      `SELECT id FROM sessions
+       WHERE ended_at IS NULL AND expires_at <= ? AND auto_end_enabled = 1`,
+      [now],
+    );
+    if (due.length === 0) return 0;
+    const ids = due.map((r) => str(r.id));
+    const marks = ids.map(() => "?").join(",");
     const res = await this.db
-      .prepare(
-        `UPDATE sessions SET ended_at = ?
-         WHERE ended_at IS NULL AND expires_at <= ? AND auto_end_enabled = 1`,
-      )
-      .bind(now, now)
+      .prepare(`UPDATE sessions SET ended_at = ? WHERE id IN (${marks}) AND ended_at IS NULL`)
+      .bind(now, ...ids)
       .run();
-    return Number((res.meta as { changes?: number } | undefined)?.changes ?? 0);
+    const closed = Number((res.meta as { changes?: number } | undefined)?.changes ?? 0);
+    for (const id of ids) {
+      try {
+        await this.materializeAbsences(id);
+      } catch (e) {
+        // A tally failure must never abort housekeeping for the other lectures.
+        console.error(JSON.stringify({ msg: "materialize_absences_error", sessionId: id }), e);
+      }
+    }
+    return closed;
   }
 
   /**
@@ -1304,8 +1486,49 @@ export class Repo {
               ar.evidence, ar.ip, ar.ua, ar.colo, ar.net_distance_meters, ar.net_lat, ar.net_lng,
               u.name AS student_name, u.matric_no
        FROM attendance_records ar JOIN users u ON u.id = ar.student_id
-       WHERE ar.session_id = ? ORDER BY ar.timestamp ASC`,
+       WHERE ar.session_id = ? AND ar.source <> 'auto_absent'
+       ORDER BY ar.timestamp ASC`,
       [sessionId],
+    );
+    // The roster's unmet expectations. While a lecture is still open this is
+    // empty on purpose (nobody is late until the door closes); the moment it
+    // closes, materializeAbsences has written one row per expected student.
+    const absenteeRows = await this.all<Row>(
+      `SELECT ar.id, ar.student_id, ar.status, ar.reason, u.name AS student_name, u.matric_no
+       FROM attendance_records ar JOIN users u ON u.id = ar.student_id
+       WHERE ar.session_id = ? AND ar.status IN ('absent','excused')
+       ORDER BY u.name ASC`,
+      [sessionId],
+    );
+    const attendance = rows.map((r) => ({
+      id: str(r.id),
+      studentId: str(r.student_id),
+      name: optStr(r.student_name) ?? "Unknown",
+      matricNo: optStr(r.matric_no) ?? "—",
+      timestamp: num(r.timestamp),
+      deviceId: optStr(r.device_id),
+      distanceMeters: optNum(r.distance_meters),
+      status: (str(r.status) as AttendanceStatus) || "present",
+      evidence: signInEvidenceFromRow(r),
+    }));
+    const absentees: Absentee[] = absenteeRows.map((r) => ({
+      studentId: str(r.student_id),
+      name: optStr(r.student_name) ?? "Unknown",
+      matricNo: optStr(r.matric_no) ?? "—",
+      status: (str(r.status) as AttendanceStatus) || "absent",
+      reason: optStr(r.reason),
+    }));
+    // Expectations for this lecture = students on the roster when it started.
+    // (For an open lecture that is also the honest denominator: the students who
+    // are not on the sign-in list yet simply haven't arrived.)
+    const roster = await this.first<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM course_enrollments
+       WHERE course_id = ? AND enrolled_at <= ?`,
+      [s.courseId, s.startedAt],
+    );
+    const counts = sessionCounts(
+      [...attendance, ...absentees],
+      Math.max(num(roster?.c), attendance.length + absentees.length),
     );
     return {
       session: s,
@@ -1315,23 +1538,13 @@ export class Repo {
         s.codeIntervalSeconds && !s.endedAt
           ? (s.codeUpdatedAt ?? s.startedAt) + s.codeIntervalSeconds * 1000
           : undefined,
-      attendance: rows.map((r) => ({
-        id: str(r.id),
-        studentId: str(r.student_id),
-        name: optStr(r.student_name) ?? "Unknown",
-        matricNo: optStr(r.matric_no) ?? "—",
-        timestamp: num(r.timestamp),
-        deviceId: optStr(r.device_id),
-        distanceMeters: optNum(r.distance_meters),
-        status: (str(r.status) as AttendanceStatus) || "present",
-        evidence: signInEvidenceFromRow(r),
-      })),
+      attendance,
+      absentees,
+      counts,
     };
   }
 
-  async getAttendanceRecord(recordId: string): Promise<AttendanceRecord | undefined> {
-    const r = await this.first<Row>("SELECT * FROM attendance_records WHERE id = ?", [recordId]);
-    if (!r) return undefined;
+  private rowToAttendanceRecord(r: Row): AttendanceRecord {
     return {
       id: str(r.id),
       sessionId: str(r.session_id),
@@ -1341,19 +1554,96 @@ export class Repo {
       latitude: optNum(r.latitude),
       longitude: optNum(r.longitude),
       status: (str(r.status) as AttendanceStatus) || "present",
+      source: (str(r.source) as AttendanceRecord["source"]) || "scan",
+      reason: optStr(r.reason),
+      markedBy: optStr(r.marked_by),
+      locked: num(r.locked) === 1,
     };
   }
 
-  async deleteAttendanceRecord(recordId: string): Promise<void> {
+  async getAttendanceRecord(recordId: string): Promise<AttendanceRecord | undefined> {
+    const r = await this.first<Row>("SELECT * FROM attendance_records WHERE id = ?", [recordId]);
+    return r ? this.rowToAttendanceRecord(r) : undefined;
+  }
+
+  /** Remove a record. Audited: an institution must be able to answer "who
+   *  deleted this sign-in, and why?" (brief §9). */
+  async deleteAttendanceRecord(
+    recordId: string,
+    options: AttendanceMutationOptions = {},
+  ): Promise<AttendanceRecord> {
+    const before = await this.getAttendanceRecord(recordId);
+    if (!before) throw new BusinessError("Attendance record not found");
+    if (before.locked && !options.allowLocked) {
+      throw new BusinessError(
+        "This record belongs to a finalised period and cannot be deleted. Ask an administrator for an override.",
+      );
+    }
     await this.run("DELETE FROM attendance_records WHERE id = ?", [recordId]);
+    if (options.audit !== false) {
+      await recordAudit(
+        this,
+        {
+          action: "attendance.void",
+          entityType: "attendance_record",
+          entityId: recordId,
+          courseId: before.courseId,
+          before,
+          after: null,
+          reason: options.reason ?? null,
+        },
+        options,
+      );
+    }
+    return before;
   }
 
   /** Flip an existing record to excused/late/absent/present. 'late' still
-   *  counts as attended in percentage math; excused/absent do not. */
-  async setAttendanceStatus(recordId: string, status: AttendanceStatus): Promise<void> {
-    const r = await this.first<Row>("SELECT id FROM attendance_records WHERE id = ?", [recordId]);
-    if (!r) throw new BusinessError("Attestation record not found");
-    await this.run("UPDATE attendance_records SET status = ? WHERE id = ?", [status, recordId]);
+   *  counts as attended in percentage math; excused/absent do not.
+   *
+   *  Every change is attributed and auditable: the operator, the reason, and
+   *  the before/after values are written to the append-only audit log in the
+   *  same request (brief §9). Materialised absences can be flipped too — that is
+   *  how a lecturer approves an excuse. */
+  async setAttendanceStatus(
+    recordId: string,
+    status: AttendanceStatus,
+    options: AttendanceMutationOptions = {},
+  ): Promise<AttendanceRecord> {
+    const before = await this.getAttendanceRecord(recordId);
+    if (!before) throw new BusinessError("Attestation record not found");
+    if (before.locked && !options.allowLocked) {
+      throw new BusinessError(
+        "This record belongs to a finalised period and cannot be changed. Ask an administrator for an override.",
+      );
+    }
+    const now = Date.now();
+    // A human touched it: provenance flips to 'manual' so nobody later mistakes
+    // a correction for a scan.
+    await this.run(
+      `UPDATE attendance_records
+       SET status = ?, source = CASE WHEN source = 'auto_absent' THEN 'manual' ELSE source END,
+           marked_by = ?, reason = ?, updated_at = ?
+       WHERE id = ?`,
+      [status, options.actorId ?? null, options.reason ?? null, now, recordId],
+    );
+    const after = (await this.getAttendanceRecord(recordId))!;
+    if (options.audit !== false) {
+      await recordAudit(
+        this,
+        {
+          action: "attendance.update",
+          entityType: "attendance_record",
+          entityId: recordId,
+          courseId: before.courseId,
+          before,
+          after,
+          reason: options.reason ?? null,
+        },
+        options,
+      );
+    }
+    return after;
   }
 
   async submitAttendance(input: {
@@ -1419,8 +1709,10 @@ export class Repo {
     // with a human reason (checked after enrollment so the order of messages
     // matches the order of worry for the student).
     if (s.seats != null && s.seats > 0) {
+      // Only real sign-ins occupy a seat (auto-absent rows are written after the
+      // lecture closes, so they can never block a seat mid-lecture).
       const taken = await this.first<{ c: number }>(
-        "SELECT COUNT(*) AS c FROM attendance_records WHERE session_id = ?",
+        "SELECT COUNT(*) AS c FROM attendance_records WHERE session_id = ? AND source <> 'auto_absent'",
         [s.id],
       );
       if (taken && taken.c >= s.seats) {
@@ -1503,8 +1795,8 @@ export class Repo {
 
     try {
       await this.run(
-        `INSERT INTO attendance_records (id, session_id, student_id, course_id, timestamp, latitude, longitude, device_id, distance_meters, status, evidence, ip, ua, colo, net_distance_meters, net_lat, net_lng)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO attendance_records (id, session_id, student_id, course_id, timestamp, latitude, longitude, device_id, distance_meters, status, source, semester_id, created_at, evidence, ip, ua, colo, net_distance_meters, net_lat, net_lng)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           nanoid(10),
           s.id,
@@ -1516,6 +1808,9 @@ export class Repo {
           deviceId,
           distanceMeters ?? null,
           "present",
+          "scan", // provenance: the student signed in themselves
+          s.semesterId ?? null,
+          now,
           evidence,
           ip,
           ua,
@@ -1538,10 +1833,13 @@ export class Repo {
   // ── Student views ──
 
   async studentHistory(studentId: string, limit = 1000): Promise<StudentHistoryItem[]> {
+    // This feed answers "when did I sign in?", so materialised absences are
+    // excluded: an absence is not a sign-in and must not be presented as one.
     const rows = await this.all<Row>(
       `SELECT ar.id, ar.timestamp, c.code AS course_code, c.title AS course_title
        FROM attendance_records ar JOIN courses c ON c.id = ar.course_id
-       WHERE ar.student_id = ? ORDER BY ar.timestamp DESC, ar.id DESC LIMIT ?`,
+       WHERE ar.student_id = ? AND ar.source <> 'auto_absent'
+       ORDER BY ar.timestamp DESC, ar.id DESC LIMIT ?`,
       [studentId, limit],
     );
     return rows.map((r) => ({
@@ -1563,13 +1861,21 @@ export class Repo {
     if (!enrolled) throw new BusinessError("Not enrolled in this course");
     const sessions = await this.listSessionsForCourse(courseId);
     const rows = await this.all<Row>(
-      "SELECT session_id, timestamp, status FROM attendance_records WHERE course_id = ? AND student_id = ?",
+      `SELECT session_id, timestamp, status, source
+       FROM attendance_records WHERE course_id = ? AND student_id = ?`,
       [courseId, studentId],
     );
-    const bySession = new Map<string, { timestamp: number; status: AttendanceStatus }>(
+    const bySession = new Map<
+      string,
+      { timestamp: number; status: AttendanceStatus; source: string }
+    >(
       rows.map((r) => [
         str(r.session_id),
-        { timestamp: num(r.timestamp), status: (str(r.status) as AttendanceStatus) || "present" },
+        {
+          timestamp: num(r.timestamp),
+          status: (str(r.status) as AttendanceStatus) || "present",
+          source: str(r.source) || "scan",
+        },
       ]),
     );
     return sessions.map((s) => {
@@ -1582,7 +1888,9 @@ export class Repo {
         expiresAt: s.expiresAt,
         topic: s.topic,
         attended,
-        attendedAt: rec?.timestamp,
+        // Only a real sign-in has a "signed in at" time; a materialised absence
+        // carries the lecture's timestamp for reporting but was not an action.
+        attendedAt: rec && rec.source !== "auto_absent" ? rec.timestamp : undefined,
         status: rec?.status ?? "absent",
       };
     });
@@ -1624,28 +1932,82 @@ export class Repo {
     if (!course) return undefined;
     const sessions = await this.listSessionsForCourse(courseId);
     const total = sessions.length;
+
+    // One row per enrolled student with the four independent tallies.
+    //
+    // "Expected" is per-student, not the course-wide session count: a student
+    // who enrolled in week 8 was never expected at the week-1 lecture, and a
+    // lecture that ran before they joined must not appear as their absence.
     const rows = await this.all<Row>(
       `SELECT u.id, u.name, u.matric_no, u.role,
-        (SELECT COUNT(*) FROM attendance_records ar WHERE ar.course_id = ? AND ar.student_id = u.id AND ar.status IN ('present','late')) AS attended,
-        (SELECT COUNT(DISTINCT ar2.device_id) FROM attendance_records ar2 WHERE ar2.course_id = ? AND ar2.student_id = u.id) AS devices
+        (SELECT COUNT(*) FROM attendance_records ar
+           WHERE ar.course_id = ? AND ar.student_id = u.id AND ar.status = 'present') AS present,
+        (SELECT COUNT(*) FROM attendance_records ar
+           WHERE ar.course_id = ? AND ar.student_id = u.id AND ar.status = 'late') AS late,
+        (SELECT COUNT(*) FROM attendance_records ar
+           WHERE ar.course_id = ? AND ar.student_id = u.id AND ar.status = 'excused') AS excused,
+        (SELECT COUNT(*) FROM attendance_records ar
+           WHERE ar.course_id = ? AND ar.student_id = u.id AND ar.status = 'absent') AS absent,
+        (SELECT COUNT(DISTINCT ar2.device_id) FROM attendance_records ar2
+           WHERE ar2.course_id = ? AND ar2.student_id = u.id) AS devices,
+        (SELECT COUNT(*) FROM sessions s
+           WHERE s.course_id = ? AND s.started_at >= ce.enrolled_at) AS expected_sessions
        FROM course_enrollments ce
        JOIN users u ON u.id = ce.student_id
        WHERE ce.course_id = ?
        ORDER BY u.name ASC`,
-      [courseId, courseId, courseId],
+      [courseId, courseId, courseId, courseId, courseId, courseId, courseId],
     );
-    const students = rows.map((r) => {
-      const attended = num(r.attended);
+
+    const students: CourseReportStudent[] = rows.map((r) => {
+      const counts = {
+        present: num(r.present),
+        late: num(r.late),
+        excused: num(r.excused),
+        absent: num(r.absent),
+      };
+      const attended = attendedCount(counts);
+      const expected = Math.max(expectedCount(counts), 0);
+      // Fall back to the sessions that ran since enrolment when nothing was
+      // recorded (e.g. a brand-new course with no sessions yet, or a deploy
+      // before absences were materialised): the denominator must reflect the
+      // lectures the student was actually expected at.
+      const expectedSessions = Math.max(expected, num(r.expected_sessions));
       return {
         id: str(r.id),
         name: str(r.name),
         matricNo: optStr(r.matric_no) ?? "—",
         attended,
-        percentage: total === 0 ? 0 : Math.round((attended / total) * 100),
+        percentage: percentageInt(attended, expectedSessions) ?? 0,
         devices: num(r.devices),
+        present: counts.present,
+        late: counts.late,
+        excused: counts.excused,
+        absent: Math.max(counts.absent, expectedSessions - attended - counts.excused),
+        expected: expectedSessions,
       };
     });
     students.sort((a, b) => b.percentage - a.percentage || a.name.localeCompare(b.name));
+
+    // Course-wide tallies and the opportunity-weighted rate (brief §8).
+    const totals = students.reduce(
+      (acc, s) => {
+        acc.present += s.present;
+        acc.late += s.late;
+        acc.excused += s.excused;
+        acc.absent += s.absent;
+        acc.expected += s.expected;
+        return acc;
+      },
+      { present: 0, late: 0, excused: 0, absent: 0, expected: 0 },
+    );
+    const attended = attendedCount(totals);
+    const counts: AttendanceCounts = {
+      ...totals,
+      attended,
+      rate: percentage(attended, totals.expected, 1),
+    };
+
     return {
       course: {
         id: course.id,
@@ -1657,6 +2019,15 @@ export class Repo {
       totalSessions: total,
       sessions: [...sessions].sort((a, b) => a.startedAt - b.startedAt),
       students,
+      counts,
+      // Weighted, NOT the mean of per-student percentages: with unequal
+      // attendance patterns those two answers differ, and the brief (§8)
+      // requires this one.
+      weightedRate: weightedPercentage(
+        students.map((s) => ({ attended: s.attended, expected: s.expected })),
+        1,
+      ),
+      meanOfStudents: meanOfPercentages(students.map((s) => s.percentage)) ?? null,
     };
   }
 
@@ -1738,26 +2109,63 @@ export class Repo {
        ORDER BY s.started_at DESC LIMIT 8`,
     );
 
-    // Non-overlapping 24h buckets ending at "now" (UTC day boundaries).
-    const dayMs = 24 * 60 * 60 * 1000;
+    // Non-overlapping local days anchored to the institution's clock, not the
+    // server's UTC day (plan §3.2 / P0.4).
+    const settings = await this.getSiteSettings();
+    const tz = settings.timezone;
     const now = Date.now();
-    const todayStart = new Date(now);
-    todayStart.setUTCHours(0, 0, 0, 0);
-    const labels: Array<{ key: string; label: string }> = [];
-    for (let i = 6; i >= 0; i--) {
-      const t = todayStart.getTime() - i * dayMs;
-      labels.push({
-        key: new Date(t).toISOString().slice(0, 10),
-        label: new Date(t).toLocaleDateString("en", { weekday: "short", timeZone: "UTC" }),
-      });
-    }
-    const weekRows = await this.all<{ d: string; c: number }>(
-      "SELECT date(timestamp / 1000, 'unixepoch') AS d, COUNT(*) AS c FROM attendance_records WHERE timestamp >= ? GROUP BY d",
-      [todayStart.getTime() - 6 * dayMs],
+    const windows = recentDayWindows(now, tz, 7);
+    const today = windows[windows.length - 1];
+
+    // The weekly chart counts real sign-ins per local day. `timestamp` is stored
+    // in UTC, so convert each bucket boundary algorithmically rather than
+    // trusting SQLite's UTC-only date() function.
+    const weekRows = await this.all<{ ts: number }>(
+      "SELECT timestamp AS ts FROM attendance_records WHERE timestamp >= ? AND source <> 'auto_absent'",
+      [windows[0].start],
     );
-    const countByDay = new Map(weekRows.map((r) => [r.d, r.c]));
+    const countByDay = new Map<string, number>();
+    for (const w of windows) countByDay.set(w.key, 0);
+    for (const r of weekRows) {
+      const key = dayWindow(num(r.ts), tz).key;
+      if (countByDay.has(key)) countByDay.set(key, (countByDay.get(key) ?? 0) + 1);
+    }
+
+    // Today's tallies: present / late / excused / absent, plus the lectures that
+    // ran and the opportunity-weighted rate for the day.
+    // "Ran today" = the lecture started inside the local day (an absence belongs
+    // to the lecture that was missed, not to whenever the session was closed).
+    const todayRows = await this.all<{ status: string; c: number }>(
+      `SELECT status, COUNT(*) AS c FROM attendance_records
+       WHERE timestamp >= ? AND timestamp < ? GROUP BY status`,
+      [today.start, today.end],
+    );
+    const todayCounts = emptyCounts();
+    for (const r of todayRows) {
+      const status = str(r.status) as keyof typeof todayCounts;
+      if (status in todayCounts) todayCounts[status] += num(r.c);
+    }
+    const classesHeld =
+      (
+        await this.first<{ c: number }>(
+          "SELECT COUNT(*) AS c FROM sessions WHERE started_at >= ? AND started_at < ?",
+          [today.start, today.end],
+        )
+      )?.c ?? 0;
+    const todayExpected = attendedCount(todayCounts) + todayCounts.excused + todayCounts.absent;
 
     return {
+      today: {
+        date: today.key,
+        label: today.label,
+        present: todayCounts.present,
+        late: todayCounts.late,
+        excused: todayCounts.excused,
+        absent: todayCounts.absent,
+        classesHeld,
+        rate: percentage(attendedCount(todayCounts), todayExpected, 1),
+        expected: todayExpected,
+      },
       counts: {
         students: counts["student"] ?? 0,
         lecturers: counts["lecturer"] ?? 0,
@@ -1774,7 +2182,124 @@ export class Repo {
         attended: num(r.attended),
         enrolled: num(r.enrolled),
       })),
-      weeklyAttendance: labels.map((l) => ({ label: l.label, count: countByDay.get(l.key) ?? 0 })),
+      weeklyAttendance: windows.map((w) => ({
+        label: w.label,
+        key: w.key,
+        count: countByDay.get(w.key) ?? 0,
+      })),
+    };
+  }
+
+  // ── Audit trail (append-only — plan §4.6) ──
+
+  /** Insert one audit row. There is deliberately no update/delete counterpart. */
+  async appendAudit(input: AppendAuditInput): Promise<string> {
+    const id = nanoid(14);
+    const encode = (v: unknown): string | null => {
+      if (v === undefined || v === null) return null;
+      try {
+        return JSON.stringify(v);
+      } catch {
+        return JSON.stringify({ unserializable: String(v) });
+      }
+    };
+    await this.run(
+      `INSERT INTO audit_log (id, actor_id, actor_role, actor_email, action, entity_type, entity_id,
+         course_id, semester_id, before_json, after_json, reason, ip_pointer, ua_pointer, req_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.actorId ?? null,
+        input.actorRole ?? null,
+        input.actorEmail ?? null,
+        input.action,
+        input.entityType,
+        input.entityId ?? null,
+        input.courseId ?? null,
+        input.semesterId ?? null,
+        encode(input.before),
+        encode(input.after),
+        input.reason ?? null,
+        input.ipPointer ?? null,
+        input.uaPointer ?? null,
+        input.reqId ?? null,
+        Date.now(),
+      ],
+    );
+    return id;
+  }
+
+  /** Read the trail (newest first). Read-only by design. */
+  async listAudit(query: AuditQuery = {}): Promise<Paginated<AuditEntry>> {
+    const page = Math.max(1, Math.floor(query.page ?? 1));
+    const pageSize = Math.min(200, Math.max(1, Math.floor(query.pageSize ?? 50)));
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (query.action) {
+      where.push("action = ?");
+      params.push(query.action);
+    }
+    if (query.actorId) {
+      where.push("actor_id = ?");
+      params.push(query.actorId);
+    }
+    if (query.entityType) {
+      where.push("entity_type = ?");
+      params.push(query.entityType);
+    }
+    if (query.entityId) {
+      where.push("entity_id = ?");
+      params.push(query.entityId);
+    }
+    if (query.courseId) {
+      where.push("course_id = ?");
+      params.push(query.courseId);
+    }
+    if (query.from != null) {
+      where.push("created_at >= ?");
+      params.push(query.from);
+    }
+    if (query.to != null) {
+      where.push("created_at <= ?");
+      params.push(query.to);
+    }
+    const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const total =
+      (await this.first<{ c: number }>(`SELECT COUNT(*) AS c FROM audit_log ${clause}`, params))
+        ?.c ?? 0;
+    const rows = await this.all<Row>(
+      `SELECT * FROM audit_log ${clause} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+      [...params, pageSize, (page - 1) * pageSize],
+    );
+    const parse = (v: unknown): unknown => {
+      const s = optStr(v);
+      if (s == null) return undefined;
+      try {
+        return JSON.parse(s);
+      } catch {
+        return s;
+      }
+    };
+    return {
+      items: rows.map((r) => ({
+        id: str(r.id),
+        actorId: optStr(r.actor_id),
+        actorRole: optStr(r.actor_role),
+        actorEmail: optStr(r.actor_email),
+        action: str(r.action),
+        entityType: str(r.entity_type),
+        entityId: optStr(r.entity_id),
+        courseId: optStr(r.course_id),
+        semesterId: optStr(r.semester_id),
+        before: parse(r.before_json),
+        after: parse(r.after_json),
+        reason: optStr(r.reason),
+        reqId: optStr(r.req_id),
+        createdAt: num(r.created_at),
+      })),
+      total,
+      page,
+      pageSize,
     };
   }
 
@@ -1803,12 +2328,16 @@ export class Repo {
       contactEmail: merged.contactEmail ?? null,
     };
     await this.run(
-      `INSERT INTO site_settings (id, institution_name, at_risk_threshold, marquee_items, testimonials,
+      `INSERT INTO site_settings (id, institution_name, at_risk_threshold, timezone, late_counts_as_attended,
+        excused_counts_as_absent, marquee_items, testimonials,
         demo_accounts_enabled, demo_password, demo_email_domain, show_fake_stats, primary_color, contact_email)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
         institution_name = excluded.institution_name,
         at_risk_threshold = excluded.at_risk_threshold,
+        timezone = excluded.timezone,
+        late_counts_as_attended = excluded.late_counts_as_attended,
+        excused_counts_as_absent = excluded.excused_counts_as_absent,
         marquee_items = excluded.marquee_items,
         testimonials = excluded.testimonials,
         demo_accounts_enabled = excluded.demo_accounts_enabled,
@@ -1821,6 +2350,9 @@ export class Repo {
         next.id,
         next.institutionName,
         next.atRiskThreshold,
+        next.timezone,
+        next.lateCountsAsAttended ? 1 : 0,
+        next.excusedCountsAsAbsent ? 1 : 0,
         JSON.stringify(next.marqueeItems),
         JSON.stringify(next.testimonials),
         next.demoAccountsEnabled ? 1 : 0,

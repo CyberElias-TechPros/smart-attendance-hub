@@ -65,6 +65,8 @@ export interface AttendanceSession {
   codeUpdatedAt?: number;
   /** Previous code, accepted briefly after rotation (grace window). Never exposed to students. */
   prevCode?: string;
+  /** Academic period this lecture belongs to (set from P1 onward). */
+  semesterId?: string;
   /** When 1 (default), the session closes itself at expires_at. */
   autoEndEnabled: boolean;
   /** Venue capacity at sign-in time. Undefined = unlimited. */
@@ -72,6 +74,11 @@ export interface AttendanceSession {
 }
 
 export type AttendanceStatus = "present" | "late" | "excused" | "absent";
+
+/** Where a record came from. `scan` = the student signed in themselves;
+ *  `auto_absent` = materialised when the session closed because the student was
+ *  on the roster and never signed in; `manual` = a human changed it. */
+export type AttendanceSource = "scan" | "manual" | "import" | "auto_absent";
 
 export interface AttendanceRecord {
   id: string;
@@ -83,6 +90,23 @@ export interface AttendanceRecord {
   longitude?: number;
   /** Sign-in status. present/late count as attended; excused/absent do not. */
   status: AttendanceStatus;
+  source: AttendanceSource;
+  /** Why a human changed this record (required for corrections). */
+  reason?: string;
+  /** User id of the person who made the last manual change. */
+  markedBy?: string;
+  /** 1 once a period is finalised — corrections require an override permission. */
+  locked: boolean;
+}
+
+/** One materialised "expected but not attended" opportunity. */
+export interface Absentee {
+  studentId: string;
+  name: string;
+  matricNo: string;
+  status: AttendanceStatus;
+  /** Set when a human changed the row (so the UI can show "excused by Dr X"). */
+  reason?: string;
 }
 
 /** Sign-in forensics surfaced to the lecturer on the live-session view.
@@ -144,6 +168,14 @@ export interface SiteSettings {
   id: string;
   institutionName: string;
   atRiskThreshold: number;
+  /** IANA timezone of the institution. Every "today"/"this week" boundary is
+   *  computed in this zone (server-side), so a Lagos campus and a London campus
+   *  never disagree about which lectures happened today. */
+  timezone: string;
+  /** Count `late` as attended in percentage math (plan decision D4). */
+  lateCountsAsAttended: boolean;
+  /** Whether an approved excuse still occupies the denominator (plan D3). */
+  excusedCountsAsAbsent: boolean;
   marqueeItems: string[];
   testimonials: Testimonial[];
   demoAccountsEnabled: boolean;
@@ -180,6 +212,7 @@ export interface SessionDetail {
   totalEnrolled: number;
   /** When the currently displayed code rotates (only for rotating sessions). */
   codeExpiresAt?: number;
+  /** Real sign-ins only (evidence is meaningless for a materialised absence). */
   attendance: Array<{
     id: string;
     studentId: string;
@@ -193,6 +226,25 @@ export interface SessionDetail {
     /** Full forensics (IP/UA/colo/distance/net/hash/class) for this sign-in. */
     evidence?: SignInEvidence;
   }>;
+  /** Roster members who were expected but have no sign-in for this lecture.
+   *  Empty while the lecture is still open (nobody is late yet). */
+  absentees: Absentee[];
+  /** Counts derived from the two lists above — the numbers the UI shows. */
+  counts: AttendanceCounts;
+}
+
+/** The four independent tallies every report is built from (plan §8). */
+export interface AttendanceCounts {
+  present: number;
+  late: number;
+  excused: number;
+  absent: number;
+  /** present + late, per the institution's lateness policy. */
+  attended: number;
+  /** Everything expected of the roster across these sessions. */
+  expected: number;
+  /** Opportunity-weighted rate in percent, or null when nothing was expected. */
+  rate: number | null;
 }
 
 export interface StudentHistoryItem {
@@ -222,6 +274,14 @@ export interface CourseReportStudent {
   percentage: number;
   /** Distinct devices used to sign in (>1 is worth a look). */
   devices: number;
+  /** Independent tallies for this student (brief §4 columns 9–11). */
+  present: number;
+  late: number;
+  excused: number;
+  absent: number;
+  /** Sessions this student was expected to attend (excludes lectures that
+   *  happened before they enrolled). */
+  expected: number;
 }
 
 export interface CourseReport {
@@ -229,6 +289,16 @@ export interface CourseReport {
   totalSessions: number;
   sessions: AttendanceSession[];
   students: CourseReportStudent[];
+  /** Roster-wide tallies across every student and session. */
+  counts: AttendanceCounts;
+  /**
+   * Opportunity-weighted course rate (brief §8). Deliberately NOT the mean of
+   * the per-student percentages: a 600-student lecture and a 120-student
+   * lecture must not carry equal weight.
+   */
+  weightedRate: number | null;
+  /** The naive mean, kept only so the UI can show the difference in a tooltip. */
+  meanOfStudents: number | null;
 }
 
 export interface FacultyReportCourse {
@@ -258,6 +328,22 @@ export interface FacultyReport {
 }
 
 export interface AdminOverview {
+  /** Counts for the institution's *local* day (see site_settings.timezone). */
+  today: {
+    /** Local calendar date the figures describe, YYYY-MM-DD. */
+    date: string;
+    label: string;
+    present: number;
+    late: number;
+    excused: number;
+    absent: number;
+    /** Lectures that ran today (started or closed). */
+    classesHeld: number;
+    /** Opportunity-weighted attendance rate for today, null when no lectures. */
+    rate: number | null;
+    /** Students expected across today's lectures. */
+    expected: number;
+  };
   counts: {
     students: number;
     lecturers: number;
@@ -274,7 +360,7 @@ export interface AdminOverview {
     attended: number;
     enrolled: number;
   }>;
-  weeklyAttendance: Array<{ label: string; count: number }>;
+  weeklyAttendance: Array<{ label: string; count: number; key?: string }>;
 }
 
 export interface OpenSession {
@@ -284,4 +370,69 @@ export interface OpenSession {
   courseTitle: string;
   /** Sign-in code is intentionally absent — see listOpenSessionsForStudent. */
   expiresAt: number;
+}
+
+// ── Audit trail (plan §4.6 / §9) ──────────────────────────────────────────
+
+/** Every mutation the institution must be able to answer for. Deliberately a
+ *  closed union: an unrecognised action string is a bug, not a new feature. */
+export type AuditAction =
+  | "attendance.update"
+  | "attendance.void"
+  | "attendance.recompute"
+  | "course.create"
+  | "course.update"
+  | "course.delete"
+  | "user.create"
+  | "user.update"
+  | "user.delete"
+  | "session.end"
+  | "export.generate"
+  | "semester.finalize"
+  | "settings.update"
+  | "auth.login_failed";
+
+export interface AuditEntry {
+  id: string;
+  actorId?: string;
+  actorRole?: string;
+  actorEmail?: string;
+  action: string;
+  entityType: string;
+  entityId?: string;
+  courseId?: string;
+  semesterId?: string;
+  /** The row as it was before the change (JSON-decoded), where applicable. */
+  before?: unknown;
+  /** The row as it became. */
+  after?: unknown;
+  reason?: string;
+  reqId?: string;
+  createdAt: number;
+}
+
+export interface AuditQuery {
+  action?: string;
+  actorId?: string;
+  entityType?: string;
+  entityId?: string;
+  courseId?: string;
+  from?: number;
+  to?: number;
+  page?: number;
+  pageSize?: number;
+}
+
+/** Standard envelope for every paginated list endpoint (plan §5.3). */
+export interface Paginated<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+/** Result of a correction, echoed back so the UI can confirm what it stored. */
+export interface AttendanceMutationResult {
+  record: AttendanceRecord;
+  audited: boolean;
 }

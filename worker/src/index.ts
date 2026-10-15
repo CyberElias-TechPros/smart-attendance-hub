@@ -16,6 +16,7 @@ import {
 } from "./auth";
 import { getRepo, type D1Database } from "./db";
 import { hashedPointer } from "./audit";
+import { recordAudit, type AuditContext } from "./audit-log";
 import { BusinessError } from "./errors";
 import { ApiError, clientIp, jsonError, jsonOk, readJsonBody } from "./http";
 import { DEFAULT_LIMITS, FixedWindowLimiter } from "./rate-limit";
@@ -294,6 +295,36 @@ const scheduleSchema = z
 
 const setAttendanceStatusSchema = z.object({
   status: z.enum(["present", "late", "excused", "absent"]),
+  // Brief §9: every correction must be explainable after the fact. Enforced
+  // here (not just in the UI) so a script cannot bypass the trail.
+  reason: z.string().trim().min(3, "Give a short reason for this correction").max(280),
+});
+
+const deleteAttendanceSchema = z.object({
+  reason: z.string().trim().min(3, "Give a short reason for this deletion").max(280),
+  /** Admin-only escape hatch for finalised periods. */
+  override: z.boolean().optional(),
+});
+
+const exportAuditSchema = z.object({
+  format: z.enum(["pdf", "xlsx", "csv", "print"]),
+  scope: z.enum(["course", "courses", "all", "semester", "session", "date-range"]),
+  courseId: z.string().trim().max(60).optional(),
+  title: z.string().trim().max(160).optional(),
+  rowCount: z.number().int().min(0).max(1_000_000).optional(),
+  filters: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+});
+
+const auditQuerySchema = z.object({
+  action: z.string().trim().max(60).optional(),
+  actorId: z.string().trim().max(60).optional(),
+  entityType: z.string().trim().max(60).optional(),
+  entityId: z.string().trim().max(60).optional(),
+  courseId: z.string().trim().max(60).optional(),
+  from: z.coerce.number().int().optional(),
+  to: z.coerce.number().int().optional(),
+  page: z.coerce.number().int().min(1).max(10_000).optional(),
+  pageSize: z.coerce.number().int().min(1).max(200).optional(),
 });
 
 const attendanceSchema = z.object({
@@ -394,6 +425,41 @@ async function bodyOf<T>(req: Request, schema: z.ZodType<T>): Promise<T> {
     );
   }
   return result.data;
+}
+
+/** Validate query-string parameters against a zod schema (the read-side twin
+ *  of `bodyOf`). Empty parameters are dropped so `?courseId=` means "absent"
+ *  rather than "empty string". */
+async function queryOf<T>(req: Request, schema: z.ZodType<T>): Promise<T> {
+  const url = new URL(req.url);
+  const raw: Record<string, string> = {};
+  for (const [k, v] of url.searchParams) {
+    if (v !== "") raw[k] = v;
+  }
+  const result = schema.safeParse(raw);
+  if (!result.success) {
+    const first = result.error.issues[0];
+    throw new ApiError(
+      400,
+      "validation_error",
+      `${first.path.join(".") || "query"}: ${first.message}`,
+    );
+  }
+  return result.data;
+}
+
+/** Attribution for the audit trail: who, from where, in which request. Raw IPs
+ *  and user-agents are never stored — only HMAC pointers. */
+function auditCtx(req: Request, base: Base, user: User): AuditContext {
+  return {
+    actorId: user.id,
+    actorRole: user.role,
+    actorEmail: user.email,
+    ip: base.ip,
+    userAgent: req.headers.get("user-agent") ?? undefined,
+    reqId: base.reqId,
+    secret: getJwtSecret(base.env),
+  };
 }
 
 async function requireCourseOwnership(
@@ -869,8 +935,23 @@ const routes: Route[] = [
           throw new ApiError(403, "forbidden", "This record belongs to a session you do not own");
         }
       }
-      await ctx.repo.deleteAttendanceRecord(p[0]);
-      return jsonOk({ ok: true });
+      const data = await bodyOf(req, deleteAttendanceSchema);
+      // Deleting a sign-in is the most destructive attendance action there is,
+      // so it needs a reason (brief §9) and, inside a finalised period, an
+      // explicit admin override.
+      if (data.override && ctx.user.role !== "admin") {
+        throw new ApiError(
+          403,
+          "forbidden",
+          "Only an administrator can override a finalised period",
+        );
+      }
+      const removed = await ctx.repo.deleteAttendanceRecord(p[0], {
+        ...auditCtx(req, base, ctx.user),
+        reason: data.reason,
+        allowLocked: Boolean(data.override && ctx.user.role === "admin"),
+      });
+      return jsonOk({ ok: true, removed });
     },
   },
   {
@@ -887,8 +968,12 @@ const routes: Route[] = [
         }
       }
       const data = await bodyOf(req, setAttendanceStatusSchema);
-      await ctx.repo.setAttendanceStatus(p[0], data.status);
-      return jsonOk({ ok: true });
+      const updated = await ctx.repo.setAttendanceStatus(p[0], data.status, {
+        ...auditCtx(req, base, ctx.user),
+        reason: data.reason,
+        allowLocked: ctx.user.role === "admin",
+      });
+      return jsonOk({ record: updated });
     },
   },
 
@@ -1086,6 +1171,47 @@ const routes: Route[] = [
       return jsonOk(await ctx.repo.adminOverview());
     },
   },
+
+  // ── Audit trail (read-only by design — plan §4.6) ──
+  {
+    method: "GET",
+    pattern: /^\/api\/audit$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const query = await queryOf(req, auditQuerySchema);
+      return jsonOk(await ctx.repo.listAudit(query));
+    },
+  },
+  {
+    // Recorded when a client finishes generating a report, so an institution can
+    // answer "who exported the attendance data, and with which filters?" — the
+    // brief's §9 requirement that exports respect access permissions has an
+    // auditable counterpart here.
+    method: "POST",
+    pattern: /^\/api\/reports\/exports$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      const data = await bodyOf(req, exportAuditSchema);
+      await recordAudit(
+        ctx.repo,
+        {
+          action: "export.generate",
+          entityType: "report",
+          entityId: null,
+          courseId: data.courseId ?? null,
+          after: {
+            format: data.format,
+            scope: data.scope,
+            rowCount: data.rowCount ?? null,
+            filters: data.filters ?? null,
+          },
+          reason: data.title ?? null,
+        },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk({ ok: true });
+    },
+  },
 ];
 
 // ─── Entry point ───────────────────────────────────────────────────────────
@@ -1105,8 +1231,19 @@ async function housekeeping(env: Env): Promise<void> {
       repo.closeExpiredSessions(),
       repo.materializeSchedules(now),
     ]);
-    if (closed > 0 || started > 0) {
-      console.log(JSON.stringify({ msg: "housekeeping", closed, started_schedules: started }));
+    // Heal lectures that closed before their roster tally was written (feature
+    // rollout, an interrupted close, a migration still rolling out). Bounded per
+    // tick so a busy institution can never turn housekeeping into a backfill.
+    const backfilled = await repo.backfillAbsences(5);
+    if (closed > 0 || started > 0 || backfilled > 0) {
+      console.log(
+        JSON.stringify({
+          msg: "housekeeping",
+          closed,
+          started_schedules: started,
+          absences_backfilled: backfilled,
+        }),
+      );
     }
   } catch (e) {
     console.error(JSON.stringify({ msg: "housekeeping_error" }), e);
