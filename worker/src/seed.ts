@@ -12,6 +12,7 @@
 
 import { nanoid } from "nanoid";
 import { hashPassword } from "./auth";
+import { gradeFor } from "./grades";
 import type { D1Database } from "./db";
 import { zonedDayStart } from "./time";
 
@@ -583,6 +584,38 @@ export async function seedD1(db: D1Database): Promise<void> {
   // meaningful — the seeded pattern contains one genuine room clash (see below).
   const scheduleRows: unknown[][] = [];
 
+  // Attendance tallies, accumulated while both course blocks below generate their
+  // lectures (the brief's eleven courses and the wider catalogue).
+  //
+  // Two reasons to count here rather than query afterwards. First, the seeded
+  // marks have to *correlate* with the seeded attendance: a demo where the
+  // students who never turn up score the highest would make the Results page
+  // look broken. Second, the counting rule is the institution's own one —
+  // attended is present + late, expected is "a lecture they were enrolled for" —
+  // so the seeded marks agree with what every report computes.
+  interface CourseTally {
+    roster: Set<string>;
+    counts: Map<string, { attended: number; expected: number }>;
+  }
+  const tallies = new Map<string, CourseTally>();
+  // Every course the seed creates, with its roster, so the assessments below can
+  // be attached to all of them — including a course whose lectures or enrolments
+  // happen to be empty, which is exactly the course a naive "iterate what the
+  // attendance produced" loop would silently skip.
+  const seededCourses: Array<{ id: string; code: string; studentIds: string[] }> = [];
+  const noteAttendance = (courseId: string, studentId: string, attended: boolean): void => {
+    let tally = tallies.get(courseId);
+    if (!tally) {
+      tally = { roster: new Set(), counts: new Map() };
+      tallies.set(courseId, tally);
+    }
+    tally.roster.add(studentId);
+    const count = tally.counts.get(studentId) ?? { attended: 0, expected: 0 };
+    count.expected += 1;
+    if (attended) count.attended += 1;
+    tally.counts.set(studentId, count);
+  };
+
   // Rooms are reused across the catalogue on purpose: reusing LT-1 for two
   // courses that meet on the same day at the same hour is exactly the conflict
   // the Timetable page must surface, so the demo data contains a real one.
@@ -605,6 +638,7 @@ export async function seedD1(db: D1Database): Promise<void> {
       c.description,
       semesterId,
     ]);
+    seededCourses.push({ id: courseId, code: c.code, studentIds: [...c.students] });
     for (const studentId of c.students) {
       // enrolled_at 0 = "since the beginning", so every generated lecture counts.
       enrollmentRows.push([courseId, studentId, 0]);
@@ -638,6 +672,7 @@ export async function seedD1(db: D1Database): Promise<void> {
       for (const studentId of c.students) {
         const reliable = reliability.get(studentId) ?? 0.8;
         const attended = random() < reliable;
+        noteAttendance(courseId, studentId, attended);
         if (!attended) {
           // Closed lectures materialise their unmet expectations: without these
           // rows "absent" is invisible and every course looks the same.
@@ -1129,6 +1164,7 @@ export async function seedD1(db: D1Database): Promise<void> {
       r.departmentId === course.departmentId ? true : Number(r.level) <= Number(course.level),
     );
     const enrolled = candidates.slice(0, course.intake);
+    seededCourses.push({ id: courseId, code: course.code, studentIds: enrolled.map((s) => s.id) });
     for (const student of enrolled) {
       await db
         .prepare("INSERT OR IGNORE INTO course_enrollments (course_id, student_id) VALUES (?, ?)")
@@ -1179,6 +1215,7 @@ export async function seedD1(db: D1Database): Promise<void> {
         const offset = Math.floor(Math.random() * 12 * 60 * 1000);
         // Sign-ins cluster in the first minutes; a fifth of arrivals are late.
         const ts = Math.round(started + (roll > 0.8 ? 12 * 60 * 1000 + offset : offset));
+        noteAttendance(courseId, student.id, roll < p);
         if (roll < p) {
           const status = roll > 0.8 ? "late" : "present";
           rows.push([id(10), sessionId, courseId, student.id, ts, status, "scan", semesterId]);
@@ -1241,6 +1278,7 @@ export async function seedD1(db: D1Database): Promise<void> {
       const roll = Math.random();
       const attended = roll < p;
       const late = attended && roll > 0.82;
+      noteAttendance(plan.courseId, student.id, attended);
       seedRecords.push([
         id(10),
         sessionId,
@@ -1259,6 +1297,192 @@ export async function seedD1(db: D1Database): Promise<void> {
     "attendance_records",
     ["id", "session_id", "course_id", "student_id", "timestamp", "status", "source", "semester_id"],
     seedRecords,
+  );
+
+  // ── Assessments and marks (plan §4.4 / P4.3–P4.4) ─────────────────────────
+  //
+  // Every course carries the two papers a Nigerian semester normally has — a
+  // continuous assessment weighted 30 and an examination weighted 70 — and every
+  // enrolled student has a mark for them. Marks are derived from the attendance
+  // each student actually accumulated above, so the Results page shows a real
+  // relationship instead of noise, and three cases are seeded on purpose because
+  // they are the ones the UI has to get right:
+  //
+  //   * a student who passes on marks but sits under the attendance threshold
+  //     (the "barred but passing" row the analytics panel exists for);
+  //   * a script that has not been marked yet — a NULL score, which must be
+  //     excluded from every average rather than averaged in as a zero;
+  //   * one paper left unpublished, so "release marks to students" is a step in
+  //     the demo rather than an assumption.
+  const markRandom = rng(20260415); // its own stream, so ordering elsewhere cannot shift it
+  const atRiskThreshold = 75; // matches site_settings.at_risk_threshold, seeded below
+  const examRows: unknown[][] = [];
+  const resultRows: unknown[][] = [];
+  const adminId = users[0].id;
+
+  for (const [index, seeded] of seededCourses.entries()) {
+    const courseId = seeded.id;
+    const tally = tallies.get(courseId);
+    const caId = id(10);
+    const finalId = id(10);
+    const finalPublished = index === seededCourses.length - 1 ? 0 : 1;
+    examRows.push(
+      [
+        caId,
+        courseId,
+        semesterId,
+        "Continuous assessment",
+        "ca",
+        30,
+        30,
+        Math.round(now - 12 * day),
+        60,
+        "Main hall",
+        1,
+        adminId,
+        now,
+      ],
+      [
+        finalId,
+        courseId,
+        semesterId,
+        "Semester examination",
+        "exam",
+        70,
+        70,
+        Math.round(now - 3 * day),
+        120,
+        "Main hall",
+        finalPublished,
+        adminId,
+        now,
+      ],
+    );
+
+    const studentIds = seeded.studentIds;
+    // The one unmarked script: the last student of the first course, on the
+    // examination paper. Deliberately not the same student for every course —
+    // an entire roster with no marks would look like a bug, not a policy.
+    const unmarked =
+      index === 0 && studentIds.length > 0 ? studentIds[studentIds.length - 1] : undefined;
+
+    for (const studentId of studentIds) {
+      const count = tally?.counts.get(studentId);
+      if (!count || count.expected === 0) continue; // no lectures: nothing to correlate with
+      const rate = count.attended / count.expected;
+      // Marks follow attendance with a little room for the student who scrapes
+      // through a paper they rarely attended: nothing here is a straight line.
+      const noise = (markRandom() - 0.5) * 0.16;
+      const base = Math.min(0.98, Math.max(0.08, 0.34 + 0.56 * rate + noise));
+      const caScore = Math.round(base * 30 * (0.94 + markRandom() * 0.12));
+      const finalScore = Math.round(base * 70 * (0.94 + markRandom() * 0.12));
+      resultRows.push([
+        id(10),
+        caId,
+        courseId,
+        semesterId,
+        studentId,
+        Math.min(30, caScore),
+        gradeFor(Math.min(30, caScore), 30) ?? null,
+        adminId,
+        now,
+      ]);
+      if (studentId === unmarked) {
+        // A script still on the examiner's desk.
+        resultRows.push([
+          id(10),
+          finalId,
+          courseId,
+          semesterId,
+          studentId,
+          null,
+          null,
+          adminId,
+          now,
+        ]);
+        continue;
+      }
+      const capped = Math.min(70, finalScore);
+      resultRows.push([
+        id(10),
+        finalId,
+        courseId,
+        semesterId,
+        studentId,
+        capped,
+        gradeFor(capped, 70) ?? null,
+        adminId,
+        now,
+      ]);
+    }
+
+    // Guarantee the case the barred-from-exam panel reports: a student under the
+    // threshold whose marks still clear the pass mark. Their attendance row is
+    // left exactly as generated — only the marks are lifted, which is precisely
+    // the situation an examination board argues about.
+    const weak = [...(tally?.counts ?? new Map()).entries()].find(
+      ([studentId, count]) =>
+        studentId !== unmarked &&
+        count.expected > 0 &&
+        (count.attended / count.expected) * 100 < atRiskThreshold,
+    );
+    if (weak) {
+      // Their marks are lifted in place rather than written twice: one row per
+      // (paper, student) is what the unique constraint promises, and the seed
+      // should not be the one thing that tests that promise.
+      const [studentId] = weak;
+      const target = 62 + Math.round(markRandom() * 6); // passing, not top of the class
+      for (const row of resultRows) {
+        if (row[2] !== courseId || row[4] !== studentId) continue;
+        if (row[1] === caId) {
+          const score = Math.round((target / 100) * 30);
+          row[5] = score;
+          row[6] = gradeFor(score, 30) ?? null;
+        } else if (row[1] === finalId) {
+          const score = Math.round((target / 100) * 70);
+          row[5] = score;
+          row[6] = gradeFor(score, 70) ?? null;
+        }
+      }
+    }
+  }
+
+  await insertMany(
+    db,
+    "exams",
+    [
+      "id",
+      "course_id",
+      "semester_id",
+      "title",
+      "kind",
+      "weight",
+      "max_score",
+      "scheduled_at",
+      "duration_minutes",
+      "venue",
+      "published",
+      "created_by",
+      "created_at",
+    ],
+    examRows,
+  );
+
+  await insertMany(
+    db,
+    "results",
+    [
+      "id",
+      "exam_id",
+      "course_id",
+      "semester_id",
+      "student_id",
+      "score",
+      "grade",
+      "entered_by",
+      "updated_at",
+    ],
+    resultRows,
   );
 
   await db

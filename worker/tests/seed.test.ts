@@ -102,4 +102,74 @@ describe("demo seed", () => {
     expect(report.totals.present + report.totals.late + report.totals.excused).toBeGreaterThan(0);
     expect(report.totals.absent).toBeGreaterThan(0);
   });
+
+  it("seeds marks that agree with the attendance behind them (P4.3/P4.4)", async () => {
+    shim = createD1Shim();
+    applyMigrations(shim.raw);
+    const repo = await getRepo(shim.db);
+
+    // Two papers per course — a continuous assessment and an examination — and
+    // a mark for every enrolled student, minus the one script on the examiner's
+    // desk.
+    const exams = shim.raw.prepare("SELECT COUNT(*) AS c FROM exams").get() as { c: number };
+    const courses = shim.raw.prepare("SELECT COUNT(*) AS c FROM courses").get() as { c: number };
+    expect(exams.c).toBe(courses.c * 2);
+
+    const unmarked = shim.raw
+      .prepare("SELECT COUNT(*) AS c FROM results WHERE score IS NULL")
+      .get() as { c: number };
+    expect(unmarked.c).toBe(1);
+
+    // A paper is still awaiting publication, so "release marks" is a real step.
+    const unpublished = shim.raw
+      .prepare("SELECT COUNT(*) AS c FROM exams WHERE published = 0")
+      .get() as { c: number };
+    expect(unpublished.c).toBe(1);
+
+    // The analytics a HOD would look at: attendance tracks performance, and the
+    // student who passes on marks while sitting under the threshold exists.
+    const report = await repo.coursesReport({ pageSize: 100 });
+    // The biggest roster, because a correlation over four students is noise.
+    const course = report.rows
+      .filter((r) => r.classesHeld > 0 && r.rate !== null)
+      .sort((a, b) => b.enrolled - a.enrolled)[0];
+    if (!course) throw new Error("seed has no course with lectures");
+    const analytics = await repo.resultAnalytics(course.id);
+    if (!analytics) throw new Error("no analytics for a seeded course");
+
+    expect(analytics.rows.length).toBeGreaterThan(15);
+    expect(analytics.summary.correlation).not.toBeNull();
+    expect(analytics.summary.correlation as number).toBeGreaterThan(0.2);
+
+    // The barred-but-passing student is in the data whether or not the
+    // institution has asserted the policy…
+    const underThreshold = analytics.rows.filter(
+      (r) => r.attendanceRate !== null && r.attendanceRate < analytics.threshold,
+    );
+    expect(underThreshold.length).toBeGreaterThan(0);
+    expect(underThreshold.some((r) => r.finalPercent !== null && r.finalPercent >= 50)).toBe(true);
+    // …and the policy flag is off by default, so nothing is barred yet.
+    expect(analytics.summary.barred).toBe(0);
+    expect(analytics.meta.threshold).toBe(75);
+
+    // Turning the policy on is what makes the report assert the consequence.
+    await repo.saveSiteSettings({ barredFromExamBelowThreshold: true });
+    const barred = await repo.resultAnalytics(course.id);
+    if (!barred) throw new Error("no analytics after enabling the policy");
+    expect(barred.summary.barred).toBeGreaterThan(0);
+    expect(barred.summary.barredButPassing).toBeGreaterThan(0);
+
+    // The unmarked script is excluded from the average rather than counted as a
+    // zero: no student without a final mark contributes to the means.
+    const scored = analytics.rows.filter((r) => r.finalPercent !== null);
+    const unscored = analytics.rows.filter((r) => r.finalPercent === null);
+    expect(scored.length + unscored.length).toBe(analytics.rows.length);
+    expect(analytics.summary.meanAbove).not.toBeNull();
+
+    // Marks sit inside the paper's own maximum — never stored as percentages.
+    const overMax = shim.raw
+      .prepare("SELECT COUNT(*) AS c FROM results WHERE score > 100")
+      .get() as { c: number };
+    expect(overMax.c).toBe(0);
+  });
 });
