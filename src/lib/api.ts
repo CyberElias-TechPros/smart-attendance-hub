@@ -32,6 +32,7 @@ import type {
   Schedule,
   Semester,
   SessionDetail,
+  SessionRegisterPage,
   SiteSettings,
   StudentCourseSession,
   StudentCourseView,
@@ -513,6 +514,9 @@ export const reports = {
   /** The brief's §4 table: every course with its attendance columns. */
   courses: (filters: ReportFilters = {}) =>
     request<CoursesReport>(`/api/reports/courses${reportQuery(filters)}`),
+  /** Institution-wide lecture register (P4.2). */
+  sessions: (filters: ReportFilters = {}) =>
+    request<SessionRegisterPage>(`/api/reports/sessions${reportQuery(filters)}`),
   /** Per-lecture rows for one course (brief §5). */
   courseSessions: (courseId: string, filters: ReportFilters = {}) =>
     request<CourseSessionStat[]>(

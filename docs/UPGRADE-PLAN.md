@@ -29,6 +29,26 @@ What it is **missing is the administrative _reporting institution layer_** the b
 
 **Plan shape:** 6 phases (P0 → P5), ~8–10 engineering weeks for the full v2.0, with a **shippable acceptance-criteria MVP at ~3 weeks** (P0 + P1 + P2 + P3 = 14 engineering days, §10). Every artifact the brief demands (§10) maps to a numbered task and to a test, and every acceptance criterion (§11) has a traceability row in §11.
 
+### Delivery status — 15 October 2026
+
+Updated as work lands, so this document never claims more than the code does.
+
+| Phase                                                                                 | State                             | What is in the repository                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **P0.1–P0.4** — weighted math, materialised absences, audit log, institution timezone | ✅ shipped (`b480513`, `5550986`) | `shared/attendance-math.ts` is the single source of the formulas (both entry points re-export the same module object); closing a session materialises absences so `present + late + excused + absent == roster`; every correction requires a reason and appends an `audit_log` row; `today.*` figures are computed in `site_settings.timezone`, not the server's. |
+| **P0.5** — institution-scale seed                                                     | ✅ shipped (`5550986`)            | 3 faculties, 7 departments, 21 courses, 78 students, 261 lectures with real statuses, plus lectures on the current local day so "present today" is a real number.                                                                                                                                                                                                 |
+| **P1** — period model, courses section, All-Courses table                             | ✅ shipped (`6bd07d6`)            | Migration `0009_academics.sql`; `/admin/courses` is a section with `All Courses` / `Add Course` / `Course Categories` children; the 12-column table sorts, pages and totals server-side; row selection rides in the URL as `courseIds`.                                                                                                                           |
+| **P2** — dashboard cards & course detail                                              | ✅ shipped (`6bd07d6`)            | Five DB-derived cards; `/admin/courses/$courseId` with per-lecture, per-student and weekly-trend tabs, all scoped to the same filters as the table row above it.                                                                                                                                                                                                  |
+| **P3** — exports, print, reporting                                                    | ✅ shipped                        | One server-built `ReportDataset` feeds the on-screen table, the Excel workbook, the print preview and the jsPDF document; `/print` renders the A4 preview with repeated headings and `Page x of y`.                                                                                                                                                               |
+| **P4.2** — institution-wide attendance register                                       | ✅ shipped                        | `/admin/attendance` + `GET /api/reports/sessions`: one row per lecture across every course, same tallies and same weighted rate as the course pages, lecturer-scoped, with drill-through into the lecture.                                                                                                                                                        |
+| **P4.5** — notifications                                                              | ✅ shipped (`614bf9a`)            | `migrations/0010_notifications.sql`, `Repo.notify()`, bell + inbox at `/admin/notifications`, wired to corrections, withdrawals and finished exports.                                                                                                                                                                                                             |
+| **P4.1 / P4.3 / P4.4** — timetable, exams & results                                   | ⏳ not started                    | `/admin/timetable` from the existing `schedules` table; `exams`/`results` schema plus score entry; results × attendance analytics. Tracked in §10 P4.                                                                                                                                                                                                             |
+| **P5** — hardening (reset flow, permissions UI, snapshots, import, E2E)               | ⏳ not started                    | Tracked in §10 P5.                                                                                                                                                                                                                                                                                                                                                |
+
+Gate at the time of writing: **159 tests / 16 files green** (`npx vitest run`),
+`npx tsc --noEmit` clean, `npx eslint .` 0 errors (10 pre-existing
+`react-refresh` warnings in the UI kit), `npx vite build` OK.
+
 ---
 
 ## 1. How to read this document
@@ -620,13 +640,13 @@ Each task lists: **what**, **files**, **definition of done**. Estimates are engi
 
 ### P4 — Sidebar depth: timetable, exams, results, notifications (5 days)
 
-| #    | Task                                                                                             | DoD                                                  |
-| ---- | ------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
-| P4.1 | `/admin/timetable` — weekly grid from existing `schedules`, clash detection, publish to students | Clash detection test (same offering/venue/time)      |
-| P4.2 | `/admin/attendance` — institution register with per-session detail and corrections               | Permission-scoped; audit rows written                |
-| P4.3 | `exams` + `results` schema, CRUD, score entry, bulk import                                       | Entering results is lecturer-scoped; HOD scoped read |
-| P4.4 | Results × attendance analytics (barred-from-exam policy, scatter/quadrant view)                  | Policy evaluation documented and testable            |
-| P4.5 | Notifications: `notify()` helper, bell + inbox + read state, event wiring                        | No N+1 notification reads; unread badge accurate     |
+| #    | Task                                                                                              | DoD                                                  |
+| ---- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| P4.1 | `/admin/timetable` — weekly grid from existing `schedules`, clash detection, publish to students  | Clash detection test (same offering/venue/time)      |
+| P4.2 | `/admin/attendance` — institution register with per-session detail and corrections ✅ **shipped** | Permission-scoped; audit rows written                |
+| P4.3 | `exams` + `results` schema, CRUD, score entry, bulk import                                        | Entering results is lecturer-scoped; HOD scoped read |
+| P4.4 | Results × attendance analytics (barred-from-exam policy, scatter/quadrant view)                   | Policy evaluation documented and testable            |
+| P4.5 | Notifications: `notify()` helper, bell + inbox + read state, event wiring                         | No N+1 notification reads; unread badge accurate     |
 
 ### P5 — Enterprise hardening (4–6 days, optional but recommended)
 

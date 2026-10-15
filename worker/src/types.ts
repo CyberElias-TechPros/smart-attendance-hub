@@ -662,6 +662,66 @@ export interface CoursesReport {
 }
 
 /** Per-lecture row for the course detail page (brief §5). */
+/**
+ * One lecture in the institution-wide register (P4.2 / brief §2 "Attendance").
+ *
+ * Deliberately the same shape as a course-detail lecture row, plus the course
+ * and lecturer it belongs to: the register is the course detail table with the
+ * `course_id` filter removed, so the two can never disagree.
+ */
+export interface SessionRegisterRow {
+  sessionId: string;
+  courseId: string;
+  courseCode: string;
+  courseTitle: string;
+  level: string;
+  units: number;
+  departmentName?: string;
+  departmentCode?: string;
+  facultyName?: string;
+  lecturerId?: string;
+  lecturerName?: string;
+  topic?: string;
+  startedAt: number;
+  endedAt?: number;
+  semesterId?: string;
+  /** Students on the roster when the lecture started. */
+  expected: number;
+  /** Every row recorded against the lecture (present + late + excused + absent). */
+  recorded: number;
+  present: number;
+  late: number;
+  excused: number;
+  absent: number;
+  rate: number | null;
+  health?: AttendanceHealth | null;
+}
+
+export interface SessionRegisterTotals {
+  lectures: number;
+  present: number;
+  late: number;
+  excused: number;
+  absent: number;
+  attended: number;
+  expected: number;
+  rate: number | null;
+}
+
+export interface SessionRegisterPage {
+  items: SessionRegisterRow[];
+  totals: SessionRegisterTotals;
+  page: number;
+  pageSize: number;
+  total: number;
+  meta: {
+    generatedAt: number;
+    filters: ReportFilters;
+    period: AcademicPeriod;
+    threshold: number;
+  };
+}
+
 export interface CourseSessionStat {
   sessionId: string;
   startedAt: number;

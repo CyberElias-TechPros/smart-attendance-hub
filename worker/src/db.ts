@@ -37,6 +37,9 @@ import type {
   CourseReportStudent,
   CourseReportTotals,
   CourseSessionStat,
+  SessionRegisterPage,
+  SessionRegisterRow,
+  SessionRegisterTotals,
   CourseReportRow,
   CoursesReport,
   Department,
@@ -281,6 +284,9 @@ function signInEvidenceFromRow(r: Row): SignInEvidence {
     class: dist != null || net != null ? "verified" : hasHash ? "unverified" : "unlocated",
   };
 }
+
+/** Largest id list any single statement may bind (D1 caps a statement at 100 parameters). */
+const MAX_IN_LIST = 90;
 
 export class Repo {
   constructor(private db: D1Database) {}
@@ -2967,11 +2973,14 @@ export class Repo {
       where.push("c.id = ?");
       params.push(filters.courseId);
     }
+    // Capped at 90 ids: D1 rejects a prepared statement with more than 100 bound
+    // parameters, so a 500-course "select all" would fail at the edge while
+    // node:sqlite (which the tests use) happily accepted it.
     const selectedIds = (filters.courseIds ?? "")
       .split(",")
       .map((v) => v.trim())
       .filter(Boolean)
-      .slice(0, 500);
+      .slice(0, MAX_IN_LIST);
     if (selectedIds.length > 0) {
       where.push(`c.id IN (${selectedIds.map(() => "?").join(",")})`);
       params.push(...selectedIds);
@@ -3250,6 +3259,196 @@ export class Repo {
   }
 
   /** Per-lecture breakdown for the course detail page (brief §5). */
+  /**
+   * Institution-wide lecture register (brief §2 sidebar "Attendance"/P4.2):
+   * one row per lecture that actually ran, across every course the filters
+   * allow, with the same four tallies the course detail page uses. Reads the
+   * same `ReportFilters` as the All-Courses table, so a filtered table and a
+   * filtered register can never disagree.
+   */
+  async sessionRegister(filters: ReportFilters = {}): Promise<SessionRegisterPage> {
+    const threshold = (await this.getSiteSettings()).atRiskThreshold;
+    const where: string[] = ["1 = 1"];
+    const params: unknown[] = [];
+    if (filters.semesterId) {
+      where.push("(s.semester_id = ? OR s.semester_id IS NULL)");
+      params.push(filters.semesterId);
+    }
+    if (filters.from != null) {
+      where.push("s.started_at >= ?");
+      params.push(filters.from);
+    }
+    if (filters.to != null) {
+      where.push("s.started_at <= ?");
+      params.push(filters.to);
+    }
+    if (filters.academicSessionId) {
+      where.push(
+        "(s.semester_id IS NULL OR s.semester_id IN (SELECT id FROM semesters WHERE academic_session_id = ?))",
+      );
+      params.push(filters.academicSessionId);
+    }
+    if (filters.facultyId) {
+      where.push("d.faculty_id = ?");
+      params.push(filters.facultyId);
+    }
+    if (filters.departmentId) {
+      where.push("c.department_id = ?");
+      params.push(filters.departmentId);
+    }
+    if (filters.lecturerId) {
+      where.push("s.lecturer_id = ?");
+      params.push(filters.lecturerId);
+    }
+    if (filters.courseId) {
+      where.push("c.id = ?");
+      params.push(filters.courseId);
+    }
+    const selectedIds = (filters.courseIds ?? "")
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean)
+      .slice(0, MAX_IN_LIST);
+    if (selectedIds.length > 0) {
+      where.push(`c.id IN (${selectedIds.map(() => "?").join(",")})`);
+      params.push(...selectedIds);
+    }
+    if (filters.search) {
+      const like = `%${filters.search}%`;
+      where.push("(c.code LIKE ? OR c.title LIKE ? OR s.topic LIKE ?)");
+      params.push(like, like, like);
+    }
+    // A status filter narrows to the lectures *containing* that status, which is
+    // the question people actually ask ("where are the absences?").
+    if (filters.status) {
+      where.push(
+        "EXISTS (SELECT 1 FROM attendance_records arx WHERE arx.session_id = s.id AND arx.status = ?)",
+      );
+      params.push(filters.status);
+    }
+    const from = `FROM sessions s
+      JOIN courses c      ON c.id = s.course_id
+      LEFT JOIN departments d ON d.id = c.department_id
+      LEFT JOIN faculties  f ON f.id = d.faculty_id
+      LEFT JOIN users      u ON u.id = s.lecturer_id
+      WHERE ${where.join(" AND ")}`;
+
+    const page = Math.max(1, Math.floor(filters.page ?? 1));
+    const pageSize = Math.min(200, Math.max(1, Math.floor(filters.pageSize ?? 25)));
+    const total = (await this.first<{ c: number }>(`SELECT COUNT(*) AS c ${from}`, params))?.c ?? 0;
+
+    const rows = await this.all<Row>(
+      `SELECT s.id, s.course_id, s.lecturer_id, s.topic, s.started_at, s.ended_at, s.semester_id,
+              c.code AS course_code, c.title AS course_title, c.level, c.units,
+              d.name AS department_name, d.code AS department_code, f.name AS faculty_name,
+              u.name AS lecturer_name,
+              (SELECT COUNT(*) FROM attendance_records ar
+                 WHERE ar.session_id = s.id AND ar.status = 'present') AS present,
+              (SELECT COUNT(*) FROM attendance_records ar
+                 WHERE ar.session_id = s.id AND ar.status = 'late') AS late,
+              (SELECT COUNT(*) FROM attendance_records ar
+                 WHERE ar.session_id = s.id AND ar.status = 'excused') AS excused,
+              (SELECT COUNT(*) FROM attendance_records ar
+                 WHERE ar.session_id = s.id AND ar.status = 'absent') AS absent,
+              (SELECT COUNT(*) FROM course_enrollments ce
+                 WHERE ce.course_id = s.course_id AND ce.enrolled_at <= s.started_at) AS roster
+       ${from}
+       ORDER BY s.started_at DESC, c.code ASC
+       LIMIT ? OFFSET ?`,
+      [...params, pageSize, (page - 1) * pageSize],
+    );
+
+    const items: SessionRegisterRow[] = rows.map((r) => {
+      const counts = {
+        present: num(r.present),
+        late: num(r.late),
+        excused: num(r.excused),
+        absent: num(r.absent),
+      };
+      const attended = attendedCount(counts);
+      const recorded = counts.present + counts.late + counts.excused + counts.absent;
+      const expected = Math.max(num(r.roster), recorded);
+      return {
+        sessionId: str(r.id),
+        courseId: str(r.course_id),
+        courseCode: str(r.course_code),
+        courseTitle: str(r.course_title),
+        level: str(r.level),
+        units: num(r.units),
+        departmentName: optStr(r.department_name),
+        departmentCode: optStr(r.department_code),
+        facultyName: optStr(r.faculty_name),
+        lecturerId: optStr(r.lecturer_id),
+        lecturerName: optStr(r.lecturer_name),
+        topic: optStr(r.topic),
+        startedAt: num(r.started_at),
+        endedAt: r.ended_at == null ? undefined : num(r.ended_at),
+        semesterId: optStr(r.semester_id),
+        expected,
+        recorded,
+        present: counts.present,
+        late: counts.late,
+        excused: counts.excused,
+        absent: Math.max(counts.absent, expected - attended - counts.excused),
+        rate: percentage(attended, expected, 1),
+        health: health(percentage(attended, expected, 1), threshold),
+      };
+    });
+
+    // Totals across every matching lecture (not just this page). Six separate
+    // aggregates, each binding its own copy of the filter parameters: folding
+    // them into one statement would multiply the parameter count by the number
+    // of metrics and blow D1's 100-parameter ceiling as soon as a date range, a
+    // department and a selection of courses were all in play.
+    const aggregate = async (metric: string): Promise<number> =>
+      num(
+        (
+          await this.first<Row>(
+            `SELECT ${metric} AS v
+             FROM attendance_records ar
+             JOIN sessions s       ON s.id = ar.session_id
+             JOIN courses c        ON c.id = s.course_id
+             LEFT JOIN departments d ON d.id = c.department_id
+             WHERE ${where.join(" AND ")}`,
+            params,
+          )
+        )?.v,
+      );
+    const lectures =
+      (await this.first<{ c: number }>(`SELECT COUNT(*) AS c ${from}`, params))?.c ?? 0;
+    const present = await aggregate("SUM(ar.status = 'present')");
+    const late = await aggregate("SUM(ar.status = 'late')");
+    const excused = await aggregate("SUM(ar.status = 'excused')");
+    const absent = await aggregate("SUM(ar.status = 'absent')");
+    const attendedTotal = present + late;
+    const recordedTotal = present + late + excused + absent;
+    const totals: SessionRegisterTotals = {
+      lectures,
+      present,
+      late,
+      excused,
+      absent,
+      attended: attendedTotal,
+      expected: Math.max(recordedTotal, attendedTotal + excused + absent),
+      rate: percentage(attendedTotal, recordedTotal, 1),
+    };
+
+    const period = await this.academicPeriod();
+    return {
+      items,
+      totals,
+      page,
+      pageSize,
+      total,
+      meta: {
+        generatedAt: Date.now(),
+        filters,
+        period,
+        threshold,
+      },
+    };
+  }
+
   async courseSessionStats(
     courseId: string,
     filters: ReportFilters = {},

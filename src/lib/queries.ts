@@ -144,6 +144,13 @@ export const auditQO = (query: Record<string, string | number | undefined> = {})
 
 // ─── Notifications (plan §4.5 / P4.5) ───────────────────────────────────────
 
+export const sessionRegisterQO = (filters: ReportFilters = {}) =>
+  queryOptions({
+    queryKey: ["reports", "sessions", filters],
+    queryFn: () => reports.sessions(filters),
+    placeholderData: keepPreviousData,
+  });
+
 export const notificationsQO = (opts: { page?: number; unreadOnly?: boolean } = {}) =>
   queryOptions({
     queryKey: ["notifications", opts],

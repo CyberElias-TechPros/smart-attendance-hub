@@ -1452,6 +1452,19 @@ const routes: Route[] = [
     },
   },
   {
+    // Institution-wide lecture register (P4.2). Lecturers are pinned to their own
+    // lectures the same way every other report is, so the page cannot be used to
+    // read another lecturer's rosters.
+    method: "GET",
+    pattern: /^\/api\/reports\/sessions$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      const filters = await queryOf(req, reportFilterSchema);
+      if (ctx.user.role === "lecturer") filters.lecturerId = ctx.user.id;
+      return jsonOk(await ctx.repo.sessionRegister(filters));
+    },
+  },
+  {
     method: "GET",
     pattern: /^\/api\/reports\/courses\/([^/]+)\/sessions$/,
     handler: async (req, p, base) => {

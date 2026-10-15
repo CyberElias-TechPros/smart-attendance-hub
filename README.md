@@ -22,22 +22,37 @@ provider.
 - **Automatic percentages** — `attended ÷ sessions held × 100`, recomputed on demand.
 - **Analytics** — weekly attendance chart, per-student breakdowns, at-risk flags.
 - **PDF & Excel reports** — generated entirely client-side, ready to email/print.
+- **Institution reporting layer** — faculties → departments → courses, an academic
+  session/semester model, and an **All-Courses table** whose 12 columns (roster,
+  lectures held, average lectures attended, attendance %, present/absent/late)
+  are computed server-side from real attendance records.
+- **Attendance register** — `/admin/attendance`: every lecture that ran,
+  institution-wide, filterable by session, semester, faculty, department, course,
+  lecturer, date range and attendance status.
+- **Exports that match the screen** — one server-built dataset feeds the table,
+  the Excel workbook, the print preview and the PDF, so a filtered view and its
+  export can never disagree. Export one course, several (row selection), or all.
+- **Attendance integrity** — closing a lecture materialises the absences, so the
+  counts always reconcile with the roster; corrections require a reason, are
+  attributed in an **audit trail**, and notify the affected student.
+- **Notifications** — a bell with an unread badge and a full inbox for
+  corrections, withdrawals and finished exports.
 - **Secure auth** — PBKDF2 password hashing + signed JWT session tokens
   (server-side role & ownership checks on every route).
 
 ## Tech stack
 
-| Layer      | Choice                                                        |
-| ---------- | ------------------------------------------------------------- |
-| Frontend   | Vite + React 19 SPA, TanStack Router (file-based) + TanStack Query |
-| UI         | Tailwind CSS v4 + shadcn/ui primitives + Radix                |
-| Charts     | Recharts                                                       |
-| QR         | `qrcode` (generate) + `html5-qrcode` (scan)                   |
-| Auth       | `jose` (JWT) + Web Crypto PBKDF2                              |
-| Reports    | `jspdf` + `jspdf-autotable` + `xlsx`                          |
-| API        | **Cloudflare Worker** (TypeScript, zod validation, rate limits, CORS) |
-| Database   | **Cloudflare D1** (SQLite) — migrations in `migrations/`      |
-| Hosting    | Frontend on **Vercel**, API on **Cloudflare Workers**         |
+| Layer    | Choice                                                                |
+| -------- | --------------------------------------------------------------------- |
+| Frontend | Vite + React 19 SPA, TanStack Router (file-based) + TanStack Query    |
+| UI       | Tailwind CSS v4 + shadcn/ui primitives + Radix                        |
+| Charts   | Recharts                                                              |
+| QR       | `qrcode` (generate) + `html5-qrcode` (scan)                           |
+| Auth     | `jose` (JWT) + Web Crypto PBKDF2                                      |
+| Reports  | `jspdf` + `jspdf-autotable` + `xlsx`                                  |
+| API      | **Cloudflare Worker** (TypeScript, zod validation, rate limits, CORS) |
+| Database | **Cloudflare D1** (SQLite) — migrations in `migrations/`              |
+| Hosting  | Frontend on **Vercel**, API on **Cloudflare Workers**                 |
 
 ## Project structure
 
@@ -63,11 +78,11 @@ wrangler.toml        Worker + D1 binding config
 The database auto-seeds demo data on first use (locally or after migrations).
 Sign in with:
 
-| Role     | Email                 | Password      |
-| -------- | --------------------- | ------------- |
-| Admin    | `admin@slams.edu`     | `password123` |
-| Lecturer | `lecturer@slams.edu`  | `password123` |
-| Student  | `student@slams.edu`   | `password123` |
+| Role     | Email                | Password      |
+| -------- | -------------------- | ------------- |
+| Admin    | `admin@slams.edu`    | `password123` |
+| Lecturer | `lecturer@slams.edu` | `password123` |
+| Student  | `student@slams.edu`  | `password123` |
 
 > The admin can register additional students/lecturers, create departments &
 > courses, assign lecturers, and enroll students. Demo accounts can be disabled

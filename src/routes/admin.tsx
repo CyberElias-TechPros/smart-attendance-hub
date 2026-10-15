@@ -3,6 +3,7 @@ import { requireRole } from "@/lib/queries";
 import { AppShell, type NavItem } from "@/components/AppShell";
 import {
   Bell,
+  CalendarCheck,
   CirclePlus,
   LayoutDashboard,
   GraduationCap,
@@ -37,8 +38,9 @@ const nav: NavItem[] = [
       { to: "/admin/courses/categories", label: "Course Categories", icon: Tags },
     ],
   },
-  { to: "/admin/reports", label: "Reports", icon: FileBarChart },
+  { to: "/admin/attendance", label: "Attendance", icon: CalendarCheck },
   { to: "/admin/notifications", label: "Notifications", icon: Bell },
+  { to: "/admin/reports", label: "Reports", icon: FileBarChart },
   { to: "/admin/audit", label: "Audit trail", icon: History },
   { to: "/admin/settings", label: "Branding", icon: Settings2 },
   { to: "/settings", label: "Settings", icon: Settings },
