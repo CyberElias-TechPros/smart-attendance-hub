@@ -61,6 +61,11 @@ describe("dashboard overview — local-day figures", () => {
     }
     await repo.setEnrollments(course.id, students);
 
+    // The institution's day may already contain the demo seed's own lectures, so
+    // the expectation is expressed as a *delta*: this lecture alone adds four
+    // opportunities, of which two were attended.
+    const before = await repo.adminOverview();
+
     const session = await repo.startSession({
       courseId: course.id,
       lecturerId: lecturer!.id,
@@ -71,13 +76,17 @@ describe("dashboard overview — local-day figures", () => {
     await repo.endSession(session.id); // materialises two absences
 
     const overview = await repo.adminOverview();
-    // Hand-computed expectation for this lecture: 2 present, 0 late, 0 excused,
-    // 2 absent, 4 expected → 50% attendance for the day.
-    expect(overview.today.present).toBe(2);
-    expect(overview.today.absent).toBe(2);
-    expect(overview.today.expected).toBe(4);
-    expect(overview.today.rate).toBe(50);
-    expect(overview.today.classesHeld).toBeGreaterThanOrEqual(1);
+    expect(overview.today.present).toBe(before.today.present + 2);
+    expect(overview.today.late).toBe(before.today.late);
+    expect(overview.today.absent).toBe(before.today.absent + 2);
+    expect(overview.today.expected).toBe(before.today.expected + 4);
+    expect(overview.today.classesHeld).toBe(before.today.classesHeld + 1);
+
+    // The day's rate is the opportunity-weighted combination of what was already
+    // there and this lecture: attended ÷ expected, computed on the new totals.
+    const attended = before.today.present + before.today.late + 2;
+    const expected = before.today.expected + 4;
+    expect(overview.today.rate).toBe(Math.round((attended / expected) * 1000) / 10);
   });
 
   it("keeps a late-evening lecture on the institution's calendar day", async () => {

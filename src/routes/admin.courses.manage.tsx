@@ -33,7 +33,10 @@ import { ICON_NAMES } from "@/lib/courseIcons";
 import { RouteTransition } from "@/components/RouteTransition";
 import { EmptyState } from "@/components/EmptyState";
 
-export const Route = createFileRoute("/admin/courses")({
+export const Route = createFileRoute("/admin/courses/manage")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    new: search.new === "1" || search.new === 1 || search.new === true ? "1" : undefined,
+  }),
   beforeLoad: async ({ context }) => {
     await Promise.all([
       context.queryClient.ensureQueryData(coursesQO),
@@ -63,7 +66,8 @@ function CoursesPage() {
   const { data: lecturers } = useSuspenseQuery(usersQO("lecturer"));
   const { data: students } = useSuspenseQuery(usersQO("student"));
   const qc = useQueryClient();
-  const [open, setOpen] = useState(false);
+  const { new: openNew } = Route.useSearch();
+  const [open, setOpen] = useState(openNew === "1");
   const [editing, setEditing] = useState<string | null>(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; code: string } | null>(null);
@@ -138,7 +142,7 @@ function CoursesPage() {
     <>
       <PageHeader
         title="Courses"
-        subtitle={`${all.length} courses across the faculty`}
+        subtitle={`${all.length} courses · create, edit, assign lecturers and manage rosters`}
         actions={
           <Dialog
             open={open}

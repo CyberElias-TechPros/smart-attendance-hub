@@ -190,9 +190,14 @@ describe("repo (integration, real SQLite via D1 shim)", () => {
 
   describe("departments", () => {
     it("creates, updates, and guards deletion", async () => {
-      const d = await repo.createDepartment("Physics", "PHY", "Atom", "oklch(0.6 0.1 300)");
-      await expect(repo.createDepartment("Physics Dup", "PHY")).rejects.toThrow("already exists");
-      await repo.updateDepartment(d.id, "Physics & Astronomy", "PHYA");
+      const d = await repo.createDepartment(
+        "Petroleum Engineering",
+        "PTE",
+        "Droplet",
+        "oklch(0.6 0.1 300)",
+      );
+      await expect(repo.createDepartment("Petroleum Dup", "PTE")).rejects.toThrow("already exists");
+      await repo.updateDepartment(d.id, "Petroleum & Gas Engineering", "PTGE");
       await expect(repo.deleteDepartment(d.id)).resolves.toBeUndefined(); // no courses in it yet
       const gone = (await repo.listDepartments()).find((x) => x.id === d.id);
       expect(gone).toBeUndefined();

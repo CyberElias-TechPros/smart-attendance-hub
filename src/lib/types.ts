@@ -39,6 +39,9 @@ export interface Course {
   color?: string;
   category?: string;
   description?: string;
+  /** Academic period this course is delivered in. Lectures and records inherit
+   *  it, which is what makes "filter by semester" and period reports work. */
+  semesterId?: string;
   /** Course-level default venue geofence (sessions inherit it). */
   venueLat?: number;
   venueLng?: number;
@@ -78,6 +81,19 @@ export interface SiteSettings {
   id: string;
   institutionName: string;
   atRiskThreshold: number;
+  /** IANA timezone used for every "today"/"this week" boundary (server-side). */
+  timezone: string;
+  /** Count `late` as attended in percentage math (plan decision D4). */
+  lateCountsAsAttended: boolean;
+  /** Whether an approved excuse still occupies the denominator (plan D3). */
+  excusedCountsAsAbsent: boolean;
+  /** The institution's active period, as resolved by the top-bar selector. */
+  currentAcademicSessionId: string | null;
+  currentSemesterId: string | null;
+  /** Optional logo printed on reports and shown in the top bar. */
+  logoUrl: string | null;
+  /** Optional note printed in the footer of every generated report. */
+  reportFooterNote: string | null;
   marqueeItems: string[];
   testimonials: Testimonial[];
   demoAccountsEnabled: boolean;
@@ -181,16 +197,60 @@ export interface CourseReportStudent {
   id: string;
   name: string;
   matricNo: string;
+  /** Lectures attended (present + late under the institution's policy). */
   attended: number;
+  /** Lectures the student was expected at since enrolling in this period. */
+  expected: number;
   percentage: number;
   devices: number;
+  /** Independently counted outcomes (brief §8 — never derived from each other). */
+  present: number;
+  late: number;
+  excused: number;
+  absent: number;
+}
+
+/** Independent tallies plus the derived attended/rate pair (brief §8). */
+export interface AttendanceCounts {
+  present: number;
+  late: number;
+  excused: number;
+  absent: number;
+  /** present + late under the institution's late policy. */
+  attended: number;
+  /** Everything expected of the roster across the lectures in scope. */
+  expected: number;
+  /** Opportunity-weighted percentage, or null when nothing was expected. */
+  rate: number | null;
 }
 
 export interface CourseReport {
-  course: { id: string; code: string; title: string; level: string; units: number };
+  course: {
+    id: string;
+    code: string;
+    title: string;
+    level: string;
+    units: number;
+    category?: string;
+    departmentName?: string;
+    departmentCode?: string;
+    facultyName?: string;
+    lecturerName?: string;
+    semesterId?: string;
+  };
   totalSessions: number;
   sessions: AttendanceSession[];
   students: CourseReportStudent[];
+  /** Roster-wide tallies across every student and lecture in the period. */
+  counts: AttendanceCounts;
+  /**
+   * Opportunity-weighted course rate (brief §8) — deliberately not the mean of
+   * the per-student percentages.
+   */
+  weightedRate: number | null;
+  /** The naive mean, kept so the UI can show why it must not be used. */
+  meanOfStudents: number | null;
+  term?: Semester | null;
 }
 
 export interface FacultyReport {
@@ -214,7 +274,22 @@ export interface FacultyReport {
   }>;
 }
 
+/** Local-day figures for the dashboard's headline cards (plan §3.2 / P0.4). */
+export interface OverviewToday {
+  date: string;
+  label: string;
+  present: number;
+  late: number;
+  excused: number;
+  absent: number;
+  classesHeld: number;
+  rate: number | null;
+  expected: number;
+}
+
 export interface AdminOverview {
+  /** Figures for the institution's *local* day (site_settings.timezone). */
+  today: OverviewToday;
   counts: {
     students: number;
     lecturers: number;
@@ -231,7 +306,7 @@ export interface AdminOverview {
     attended: number;
     enrolled: number;
   }>;
-  weeklyAttendance: Array<{ label: string; count: number }>;
+  weeklyAttendance: Array<{ label: string; count: number; key?: string }>;
 }
 
 export interface OpenSession {
@@ -241,4 +316,175 @@ export interface OpenSession {
   courseTitle: string;
   /** Sign-in code is intentionally absent — students must be in the venue. */
   expiresAt: number;
+}
+
+// ── Academic structure & reports (plan §4–§6) ─────────────────────────────
+
+export interface Faculty {
+  id: string;
+  name: string;
+  code: string;
+  deanUserId?: string;
+  icon?: string;
+  color?: string;
+  createdAt: number;
+}
+
+export interface AcademicSession {
+  id: string;
+  name: string;
+  code: string;
+  startsOn?: number;
+  endsOn?: number;
+  isCurrent: boolean;
+  createdAt: number;
+}
+
+export interface Semester {
+  id: string;
+  academicSessionId: string;
+  name: string;
+  sequence: number;
+  startsOn?: number;
+  endsOn?: number;
+  isCurrent: boolean;
+  finalizedAt?: number;
+  createdAt: number;
+}
+
+export interface AcademicPeriod {
+  academicSession: AcademicSession | null;
+  semester: Semester | null;
+  academicSessions: AcademicSession[];
+  semesters: Semester[];
+}
+
+/** The eight attendance filters from the brief (§6). Every report, export and
+ *  print view takes exactly this shape. */
+export interface ReportFilters {
+  academicSessionId?: string;
+  semesterId?: string;
+  facultyId?: string;
+  departmentId?: string;
+  courseId?: string;
+  lecturerId?: string;
+  from?: number;
+  to?: number;
+  status?: AttendanceStatus;
+  search?: string;
+  /** Free-text course catalogue grouping (courses.category). */
+  category?: string;
+  sort?: ReportSortKey;
+  dir?: "asc" | "desc";
+  page?: number;
+  pageSize?: number;
+}
+
+export type ReportSortKey =
+  | "code"
+  | "title"
+  | "department"
+  | "enrolled"
+  | "classesHeld"
+  | "classesAttended"
+  | "rate"
+  | "present"
+  | "absent"
+  | "late";
+
+/** One row of the All Courses table (brief §4). */
+export interface CourseReportRow {
+  id: string;
+  code: string;
+  title: string;
+  departmentId: string;
+  departmentName?: string;
+  departmentCode?: string;
+  facultyId?: string;
+  facultyName?: string;
+  lecturerId?: string;
+  lecturerName?: string;
+  semesterId?: string;
+  level: string;
+  units: number;
+  /** Free-text catalogue grouping, shown on the Course Categories page. */
+  category?: string;
+  enrolled: number;
+  classesHeld: number;
+  classesAttended: number;
+  present: number;
+  absent: number;
+  late: number;
+  excused: number;
+  attended: number;
+  expected: number;
+  rate: number | null;
+  health: "good" | "watch" | "at-risk" | "critical" | null;
+}
+
+export interface CourseReportTotals {
+  courses: number;
+  enrolled: number;
+  classesHeld: number;
+  classesAttended: number;
+  present: number;
+  absent: number;
+  late: number;
+  excused: number;
+  attended: number;
+  expected: number;
+  rate: number | null;
+}
+
+export interface CoursesReport {
+  rows: CourseReportRow[];
+  totals: CourseReportTotals;
+  meta: {
+    generatedAt: number;
+    filters: ReportFilters;
+    period: { academicSession?: AcademicSession; semester?: Semester };
+    calculation: string;
+    threshold: number;
+  };
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+export interface CourseSessionStat {
+  sessionId: string;
+  startedAt: number;
+  endedAt?: number;
+  topic?: string;
+  present: number;
+  late: number;
+  excused: number;
+  absent: number;
+  expected: number;
+  rate: number | null;
+}
+
+// ── Audit trail (plan §4.6) ────────────────────────────────────────────────
+
+export interface AuditEntry {
+  id: string;
+  actorId?: string;
+  actorRole?: string;
+  actorEmail?: string;
+  action: string;
+  entityType: string;
+  entityId?: string;
+  courseId?: string;
+  reason?: string;
+  before?: unknown;
+  after?: unknown;
+  reqId?: string;
+  createdAt: number;
+}
+
+export interface Paginated<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
 }

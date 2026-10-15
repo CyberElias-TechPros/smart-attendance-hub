@@ -68,7 +68,7 @@ describe("worker handler (integration)", () => {
   let studentToken: string;
   let lecturerId: string;
   let otherLecturerId: string;
-  let courseA: { id: string }; // owned by demo lecturer
+  let courseA: { id: string; code: string }; // owned by demo lecturer
   let courseB: { id: string }; // owned by a second lecturer
 
   beforeAll(async () => {
@@ -118,7 +118,11 @@ describe("worker handler (integration)", () => {
     });
 
     const coursesRes = await h.call("GET", "/api/courses", { token: lecturerToken });
-    const courses = (await coursesRes.json()) as Array<{ id: string; lecturerId?: string }>;
+    const courses = (await coursesRes.json()) as Array<{
+      id: string;
+      code: string;
+      lecturerId?: string;
+    }>;
     courseA = courses.find((c) => c.lecturerId === lecturerId)!;
     void otherLec;
   });
@@ -282,7 +286,7 @@ describe("worker handler (integration)", () => {
     });
     expect(ok.status).toBe(200);
     const body = (await ok.json()) as { course: { code: string } };
-    expect(body.course.code).toBe(courseA ? "CSC 305" : body.course.code);
+    expect(body.course.code).toBe(courseA.code);
 
     const dup = await h.call("POST", "/api/attendance", {
       token: studentToken,

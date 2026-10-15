@@ -10,17 +10,26 @@
 // Authorization header — works same-origin and cross-origin alike.
 
 import type {
+  AcademicPeriod,
+  AcademicSession,
   AdminOverview,
   AttendanceSession,
   AttendanceStatus,
+  AuditEntry,
   Course,
   CourseReport,
+  CourseSessionStat,
+  CoursesReport,
   Department,
+  Faculty,
   FacultyReport,
   OpenSession,
+  Paginated,
   PublicSettings,
+  ReportFilters,
   Role,
   Schedule,
+  Semester,
   SessionDetail,
   SiteSettings,
   StudentCourseSession,
@@ -151,6 +160,18 @@ const qs = (params: Record<string, string | undefined>) => {
   >;
   return entries.length ? `?${new URLSearchParams(entries).toString()}` : "";
 };
+
+/** Serialise the brief's attendance filters (§6) for any report endpoint.
+ *  Booleans/numbers are stringified so the same object can drive a link the
+ *  administrator copies, an export, and a print view. */
+export function reportQuery(filters: ReportFilters = {}): string {
+  const params: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(filters)) {
+    if (value === undefined || value === null || value === "") continue;
+    params[key] = String(value);
+  }
+  return qs(params);
+}
 
 // ─── Auth ──────────────────────────────────────────────────────────────────
 
@@ -325,14 +346,21 @@ export const sessions = {
     request<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/end`, {
       method: "POST",
     }),
-  removeAttendance: (recordId: string) =>
-    request<{ ok: boolean }>(`/api/attendance/${encodeURIComponent(recordId)}`, {
+  /**
+   * Deleting a sign-in requires a reason: every correction is written to the
+   * audit trail (brief §9). `override` is the admin-only escape hatch for a
+   * finalised period.
+   */
+  removeAttendance: (recordId: string, input: { reason: string; override?: boolean }) =>
+    request<{ ok: boolean; removed: number }>(`/api/attendance/${encodeURIComponent(recordId)}`, {
       method: "DELETE",
+      body: input,
     }),
-  setAttendanceStatus: (recordId: string, status: AttendanceStatus) =>
-    request<{ ok: boolean }>(`/api/attendance/${encodeURIComponent(recordId)}/status`, {
+  /** Changing a status also requires a reason (same trail). */
+  setAttendanceStatus: (recordId: string, status: AttendanceStatus, input: { reason: string }) =>
+    request<{ record: unknown }>(`/api/attendance/${encodeURIComponent(recordId)}/status`, {
       method: "PATCH",
-      body: { status },
+      body: { status, ...input },
     }),
 };
 
@@ -393,9 +421,105 @@ export const student = {
 
 // ─── Reports ───────────────────────────────────────────────────────────────
 
+export const faculties = {
+  list: () => request<Faculty[]>(`/api/faculties`),
+  create: (input: {
+    name: string;
+    code: string;
+    deanUserId?: string;
+    icon?: string;
+    color?: string;
+  }) => request<Faculty>(`/api/faculties`, { method: "POST", body: input }),
+  update: (
+    id: string,
+    input: { name?: string; code?: string; deanUserId?: string; icon?: string; color?: string },
+  ) =>
+    request<Faculty>(`/api/faculties/${encodeURIComponent(id)}`, { method: "PATCH", body: input }),
+  remove: (id: string) =>
+    request<{ ok: boolean }>(`/api/faculties/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  setDepartment: (departmentId: string, facultyId: string | null) =>
+    request<{ ok: boolean }>(`/api/departments/${encodeURIComponent(departmentId)}/faculty`, {
+      method: "PATCH",
+      body: { facultyId },
+    }),
+};
+
+export const academics = {
+  period: () => request<AcademicPeriod>(`/api/academics/period`),
+  createSession: (input: {
+    name: string;
+    code: string;
+    startsOn?: number;
+    endsOn?: number;
+    makeCurrent?: boolean;
+  }) => request<AcademicSession>(`/api/academic-sessions`, { method: "POST", body: input }),
+  createSemester: (input: {
+    academicSessionId: string;
+    name: string;
+    sequence?: number;
+    startsOn?: number;
+    endsOn?: number;
+    makeCurrent?: boolean;
+  }) => request<Semester>(`/api/semesters`, { method: "POST", body: input }),
+  updateSemester: (
+    id: string,
+    input: { name?: string; startsOn?: number | null; endsOn?: number | null },
+  ) =>
+    request<Semester>(`/api/semesters/${encodeURIComponent(id)}`, { method: "PATCH", body: input }),
+  setCurrentSemester: (id: string) =>
+    request<AcademicPeriod>(`/api/semesters/${encodeURIComponent(id)}/current`, { method: "POST" }),
+  finalizeSemester: (id: string) =>
+    request<Semester>(`/api/semesters/${encodeURIComponent(id)}/finalize`, { method: "POST" }),
+};
+
+export const audit = {
+  list: (
+    query: {
+      action?: string;
+      actorId?: string;
+      entityType?: string;
+      entityId?: string;
+      courseId?: string;
+      from?: number;
+      to?: number;
+      page?: number;
+      pageSize?: number;
+    } = {},
+  ) => request<Paginated<AuditEntry>>(`/api/audit${reportQuery(query as ReportFilters)}`),
+};
+
 export const reports = {
-  course: (courseId: string) =>
-    request<CourseReport>(`/api/reports/course/${encodeURIComponent(courseId)}`),
+  /** The brief's §4 table: every course with its attendance columns. */
+  courses: (filters: ReportFilters = {}) =>
+    request<CoursesReport>(`/api/reports/courses${reportQuery(filters)}`),
+  /** Per-lecture rows for one course (brief §5). */
+  courseSessions: (courseId: string, filters: ReportFilters = {}) =>
+    request<CourseSessionStat[]>(
+      `/api/reports/courses/${encodeURIComponent(courseId)}/sessions${reportQuery(filters)}`,
+    ),
+  /** One student's lecture-by-lecture history within a course (brief §5). */
+  courseStudentHistory: (courseId: string, studentId: string) =>
+    request<{
+      rows: StudentCourseSession[];
+      summary: { present: number; late: number; excused: number; absent: number; total: number };
+    }>(
+      `/api/reports/courses/${encodeURIComponent(courseId)}/students/${encodeURIComponent(studentId)}`,
+    ),
+  /** Record an export so the trail shows who took data out (brief §9). */
+  logExport: (input: {
+    format: "pdf" | "xlsx" | "csv" | "print";
+    scope: "course" | "courses" | "all" | "semester" | "session" | "date-range";
+    courseId?: string;
+    title?: string;
+    rowCount?: number;
+    filters?: Record<string, string | number | boolean>;
+  }) => request<{ ok: boolean }>(`/api/reports/exports`, { method: "POST", body: input }),
+  /** One course's full attendance report, scoped to the same filters the
+   *  All-Courses table uses (so the two can never disagree). */
+  course: (courseId: string, filters: ReportFilters = {}) =>
+    request<CourseReport>(
+      `/api/reports/course/${encodeURIComponent(courseId)}${reportQuery(filters)}`,
+    ),
   faculty: () => request<FacultyReport>("/api/reports/faculty"),
   adminOverview: () => request<AdminOverview>("/api/admin/overview"),
 };

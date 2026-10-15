@@ -20,6 +20,7 @@ import { recordAudit, type AuditContext } from "./audit-log";
 import { BusinessError } from "./errors";
 import { ApiError, clientIp, jsonError, jsonOk, readJsonBody } from "./http";
 import { DEFAULT_LIMITS, FixedWindowLimiter } from "./rate-limit";
+import { isValidTimeZone } from "./time";
 import type { Role, User } from "./types";
 
 export interface Env {
@@ -306,6 +307,71 @@ const deleteAttendanceSchema = z.object({
   override: z.boolean().optional(),
 });
 
+/** The eight attendance filters from the brief (§6). Every report, export and
+ *  print view takes exactly this shape, so "exports use the current filters" is
+ *  structural rather than something a caller has to remember. */
+const reportFilterSchema = z.object({
+  academicSessionId: z.string().trim().max(60).optional(),
+  semesterId: z.string().trim().max(60).optional(),
+  facultyId: z.string().trim().max(60).optional(),
+  departmentId: z.string().trim().max(60).optional(),
+  courseId: z.string().trim().max(60).optional(),
+  lecturerId: z.string().trim().max(60).optional(),
+  from: z.coerce.number().int().optional(),
+  to: z.coerce.number().int().optional(),
+  status: z.enum(["present", "late", "excused", "absent"]).optional(),
+  search: z.string().trim().max(120).optional(),
+  category: z.string().trim().max(60).optional(),
+  sort: z
+    .enum([
+      "code",
+      "title",
+      "department",
+      "enrolled",
+      "classesHeld",
+      "classesAttended",
+      "rate",
+      "present",
+      "absent",
+      "late",
+    ])
+    .optional(),
+  dir: z.enum(["asc", "desc"]).optional(),
+  page: z.coerce.number().int().min(1).max(10_000).optional(),
+  pageSize: z.coerce.number().int().min(1).max(500).optional(),
+});
+
+const facultySchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  code: z.string().trim().min(2).max(12),
+  deanUserId: z.string().trim().max(60).optional(),
+  icon: z.string().trim().max(40).optional(),
+  color: z.string().trim().max(60).optional(),
+});
+
+const academicSessionSchema = z.object({
+  name: z.string().trim().min(4).max(60),
+  code: z.string().trim().min(4).max(40),
+  startsOn: z.number().int().optional(),
+  endsOn: z.number().int().optional(),
+  makeCurrent: z.boolean().optional(),
+});
+
+const semesterSchema = z.object({
+  academicSessionId: z.string().trim().min(1).max(60),
+  name: z.string().trim().min(3).max(60),
+  sequence: z.number().int().min(1).max(8).optional(),
+  startsOn: z.number().int().optional(),
+  endsOn: z.number().int().optional(),
+  makeCurrent: z.boolean().optional(),
+});
+
+const semesterUpdateSchema = z.object({
+  name: z.string().trim().min(3).max(60).optional(),
+  startsOn: z.number().int().nullable().optional(),
+  endsOn: z.number().int().nullable().optional(),
+});
+
 const exportAuditSchema = z.object({
   format: z.enum(["pdf", "xlsx", "csv", "print"]),
   scope: z.enum(["course", "courses", "all", "semester", "session", "date-range"]),
@@ -350,6 +416,19 @@ const testimonialSchema = z.object({
 
 const siteSettingsSchema = z.object({
   institutionName: z.string().trim().min(1).max(120).optional(),
+  /** IANA timezone — every "today"/"this week" boundary is computed in it. */
+  timezone: z
+    .string()
+    .trim()
+    .max(64)
+    .refine((tz) => isValidTimeZone(tz), "Unknown IANA timezone")
+    .optional(),
+  /** Print/PDF branding (brief §7). */
+  logoUrl: z.string().trim().max(600).nullable().optional(),
+  reportFooterNote: z.string().trim().max(300).nullable().optional(),
+  /** Plan decisions D3/D4 — changeable without a deploy. */
+  lateCountsAsAttended: z.boolean().optional(),
+  excusedCountsAsAbsent: z.boolean().optional(),
   atRiskThreshold: z.number().min(0).max(100).optional(),
   marqueeItems: z.array(z.string().trim().max(80)).max(20).optional(),
   testimonials: z.array(testimonialSchema).max(12).optional(),
@@ -1150,7 +1229,8 @@ const routes: Route[] = [
     handler: async (req, p, base) => {
       const ctx = await needAuth(req, base, ["admin", "lecturer"]);
       await requireCourseOwnership(ctx.repo, ctx.user, p[0]);
-      const report = await ctx.repo.courseReport(p[0]);
+      const filters = await queryOf(req, reportFilterSchema);
+      const report = await ctx.repo.courseReport(p[0], filters);
       if (!report) throw new ApiError(404, "not_found", "Course not found");
       return jsonOk(report);
     },
@@ -1169,6 +1249,200 @@ const routes: Route[] = [
     handler: async (req, _p, base) => {
       const ctx = await needAuth(req, base, ["admin"]);
       return jsonOk(await ctx.repo.adminOverview());
+    },
+  },
+
+  // ── Academic structure: faculties, sessions, semesters (plan §4.1) ──
+  {
+    method: "GET",
+    pattern: /^\/api\/faculties$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base);
+      return jsonOk(await ctx.repo.listFaculties());
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/faculties$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const data = await bodyOf(req, facultySchema);
+      const faculty = await ctx.repo.createFaculty(data);
+      await recordAudit(
+        ctx.repo,
+        { action: "course.create", entityType: "faculty", entityId: faculty.id, after: faculty },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk(faculty, { status: 201 });
+    },
+  },
+  {
+    method: "PATCH",
+    pattern: /^\/api\/faculties\/([^/]+)$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const data = await bodyOf(req, facultySchema.partial());
+      const faculty = await ctx.repo.updateFaculty(p[0], data);
+      await recordAudit(
+        ctx.repo,
+        { action: "course.update", entityType: "faculty", entityId: p[0], after: faculty },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk(faculty);
+    },
+  },
+  {
+    method: "DELETE",
+    pattern: /^\/api\/faculties\/([^/]+)$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      await ctx.repo.deleteFaculty(p[0]);
+      await recordAudit(
+        ctx.repo,
+        { action: "course.delete", entityType: "faculty", entityId: p[0] },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk({ ok: true });
+    },
+  },
+  {
+    // Attach (or detach) a department from a faculty — the link the brief's
+    // faculty filter, faculty column and faculty roll-ups all read (plan §4.1).
+    method: "PATCH",
+    pattern: /^\/api\/departments\/([^/]+)\/faculty$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const data = await bodyOf(req, z.object({ facultyId: z.string().trim().max(60).nullable() }));
+      await ctx.repo.setDepartmentFaculty(p[0], data.facultyId);
+      return jsonOk({ ok: true });
+    },
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/academics\/period$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base);
+      return jsonOk(await ctx.repo.academicPeriod());
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/academic-sessions$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const data = await bodyOf(req, academicSessionSchema);
+      const created = await ctx.repo.createAcademicSession(data);
+      await recordAudit(
+        ctx.repo,
+        {
+          action: "settings.update",
+          entityType: "academic_session",
+          entityId: created.id,
+          after: created,
+        },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk(created, { status: 201 });
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/semesters$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const data = await bodyOf(req, semesterSchema);
+      const created = await ctx.repo.createSemester(data);
+      await recordAudit(
+        ctx.repo,
+        { action: "settings.update", entityType: "semester", entityId: created.id, after: created },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk(created, { status: 201 });
+    },
+  },
+  {
+    method: "PATCH",
+    pattern: /^\/api\/semesters\/([^/]+)$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const data = await bodyOf(req, semesterUpdateSchema);
+      // `null` from the client means "clear this date"; the repo models an
+      // absent window as undefined.
+      return jsonOk(
+        await ctx.repo.updateSemester(p[0], {
+          ...(data.name !== undefined ? { name: data.name } : {}),
+          ...(data.startsOn !== undefined ? { startsOn: data.startsOn ?? undefined } : {}),
+          ...(data.endsOn !== undefined ? { endsOn: data.endsOn ?? undefined } : {}),
+        }),
+      );
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/semesters\/([^/]+)\/current$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      await ctx.repo.setCurrentSemester(p[0]);
+      return jsonOk(await ctx.repo.academicPeriod());
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/semesters\/([^/]+)\/finalize$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const semester = await ctx.repo.finalizeSemester(p[0]);
+      await recordAudit(
+        ctx.repo,
+        {
+          action: "semester.finalize",
+          entityType: "semester",
+          entityId: p[0],
+          after: semester,
+        },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk(semester);
+    },
+  },
+
+  // ── Attendance reports (brief §4 + §6) ──
+  {
+    method: "GET",
+    pattern: /^\/api\/reports\/courses$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      const filters = await queryOf(req, reportFilterSchema);
+      // Lecturers may only report on their own courses, whatever they ask for.
+      if (ctx.user.role === "lecturer") filters.lecturerId = ctx.user.id;
+      return jsonOk(await ctx.repo.coursesReport(filters));
+    },
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/reports\/courses\/([^/]+)\/sessions$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      await requireCourseOwnership(ctx.repo, ctx.user, p[0]);
+      const filters = await queryOf(req, reportFilterSchema);
+      return jsonOk(await ctx.repo.courseSessionStats(p[0], filters));
+    },
+  },
+  {
+    // One student's lecture-by-lecture history inside one course (brief §5:
+    // "each student's attendance history"). Same maths the student sees on their
+    // own page, so an administrator and the student read identical numbers.
+    method: "GET",
+    pattern: /^\/api\/reports\/courses\/([^/]+)\/students\/([^/]+)$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      await requireCourseOwnership(ctx.repo, ctx.user, p[0]);
+      const rows = await ctx.repo.studentCourseSessions(p[1], p[0]);
+      const present = rows.filter((r) => r.status === "present").length;
+      const late = rows.filter((r) => r.status === "late").length;
+      const excused = rows.filter((r) => r.status === "excused").length;
+      const absent = rows.filter((r) => r.status === "absent").length;
+      return jsonOk({ rows, summary: { present, late, excused, absent, total: rows.length } });
     },
   },
 

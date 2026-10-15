@@ -14,11 +14,13 @@ import {
   attendedCount,
   emptyCounts,
   expectedCount,
+  health,
   meanOfPercentages,
   percentage,
   percentageInt,
   tallyStatuses,
   weightedPercentage,
+  type StatusCounts,
 } from "./stats";
 import { dayWindow, recentDayWindows } from "./time";
 import type {
@@ -30,8 +32,17 @@ import type {
   AttendanceStatus,
   Course,
   CourseReport,
+  AcademicPeriod,
+  AcademicSession,
   CourseReportStudent,
+  CourseReportTotals,
+  CourseSessionStat,
+  CourseReportRow,
+  CoursesReport,
   Department,
+  Faculty,
+  ReportFilters,
+  Semester,
   AuditEntry,
   AuditQuery,
   Paginated,
@@ -143,6 +154,10 @@ export function defaultSiteSettings(): SiteSettings {
     timezone: "Africa/Lagos",
     lateCountsAsAttended: true,
     excusedCountsAsAbsent: true,
+    currentAcademicSessionId: null,
+    currentSemesterId: null,
+    logoUrl: null,
+    reportFooterNote: null,
     marqueeItems: [
       "Real-time QR check-in",
       "Fraud-resistant codes",
@@ -212,6 +227,23 @@ export interface AttendanceMutationOptions extends AuditContext {
   allowLocked?: boolean;
   /** Set false only for bookkeeping that should stay out of the trail. */
   audit?: boolean;
+}
+
+/** An all-zero totals row (empty filters, or a filtered set with no matches). */
+function emptyTotals(): CourseReportTotals {
+  return {
+    courses: 0,
+    enrolled: 0,
+    classesHeld: 0,
+    classesAttended: 0,
+    present: 0,
+    absent: 0,
+    late: 0,
+    excused: 0,
+    attended: 0,
+    expected: 0,
+    rate: null,
+  };
 }
 
 /** Turn a lecture's recorded rows plus its expected-roster size into the four
@@ -374,6 +406,10 @@ export class Repo {
       showFakeStats: !!r.show_fake_stats,
       primaryColor: r.primary_color == null ? null : String(r.primary_color),
       contactEmail: r.contact_email == null ? null : String(r.contact_email),
+      currentAcademicSessionId: optStr(r.current_academic_session_id) ?? null,
+      currentSemesterId: optStr(r.current_semester_id) ?? null,
+      logoUrl: optStr(r.logo_url) ?? null,
+      reportFooterNote: optStr(r.report_footer_note) ?? null,
     };
   }
 
@@ -1028,10 +1064,18 @@ export class Repo {
     autoEndEnabled?: boolean;
   }): Promise<AttendanceSession> {
     const now = Date.now();
+    // A lecture belongs to the period its course is scoped to; when the course
+    // has no period yet, it belongs to the institution's active semester. This
+    // is what makes "filter by semester", per-semester reports, and period
+    // freezing work without a later repair pass (plan §4.1).
+    const course = await this.getCourse(input.courseId);
+    const period = course?.semesterId ? null : await this.academicPeriod();
+    const semesterId = course?.semesterId ?? period?.semester?.id;
     const s: AttendanceSession = {
       id: nanoid(10),
       courseId: input.courseId,
       lecturerId: input.lecturerId,
+      semesterId,
       code: await this.freshCode(),
       startedAt: now,
       expiresAt: now + input.durationMinutes * 60 * 1000,
@@ -1046,8 +1090,8 @@ export class Repo {
     };
     await this.run(
       `INSERT INTO sessions (id, course_id, lecturer_id, code, started_at, expires_at, ended_at, latitude, longitude, radius_meters, topic,
-        code_interval_seconds, code_updated_at, prev_code, auto_end_enabled, seats)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        code_interval_seconds, code_updated_at, prev_code, auto_end_enabled, seats, semester_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         s.id,
         s.courseId,
@@ -1065,6 +1109,7 @@ export class Repo {
         null,
         s.autoEndEnabled ? 1 : 0,
         s.seats ?? null,
+        s.semesterId ?? null,
       ],
     );
     return s;
@@ -1927,11 +1972,66 @@ export class Repo {
 
   // ── Reports / analytics ──
 
-  async courseReport(courseId: string): Promise<CourseReport | undefined> {
+  async courseReport(
+    courseId: string,
+    filters: ReportFilters = {},
+  ): Promise<CourseReport | undefined> {
     const course = await this.getCourse(courseId);
     if (!course) return undefined;
-    const sessions = await this.listSessionsForCourse(courseId);
+    const semesterId = filters.semesterId ?? (await this.academicPeriod()).semester?.id;
+
+    // Period scoping: the detail page must agree with the row the All Courses
+    // table shows for this course, so both read the same window (brief §5/§6).
+    const sessionWhere = ["course_id = ?"];
+    const sessionParams: unknown[] = [courseId];
+    if (semesterId) {
+      sessionWhere.push("(semester_id = ? OR semester_id IS NULL)");
+      sessionParams.push(semesterId);
+    }
+    if (filters.from != null) {
+      sessionWhere.push("started_at >= ?");
+      sessionParams.push(filters.from);
+    }
+    if (filters.to != null) {
+      sessionWhere.push("started_at <= ?");
+      sessionParams.push(filters.to);
+    }
+    const meta = await this.first<Row>(
+      `SELECT d.id AS department_id, d.name AS department_name, d.code AS department_code,
+              f.name AS faculty_name, u.name AS lecturer_name
+       FROM courses c
+       LEFT JOIN departments d ON d.id = c.department_id
+       LEFT JOIN faculties   f ON f.id = d.faculty_id
+       LEFT JOIN users       u ON u.id = c.lecturer_id
+       WHERE c.id = ?`,
+      [courseId],
+    );
+    const sessionRows = await this.all<Row>(
+      `SELECT * FROM sessions WHERE ${sessionWhere.join(" AND ")} ORDER BY started_at DESC`,
+      sessionParams,
+    );
+    const sessions = sessionRows.map((r) => this.rowToSession(r));
     const total = sessions.length;
+    const sessionIds = sessions.map((s) => s.id);
+    const marks = sessionIds.map(() => "?").join(",");
+    // Everything the student table counts is restricted to the lectures in
+    // scope, so per-student tallies always reconcile with the per-lecture table.
+    const inScope = sessionIds.length ? `ar.session_id IN (${marks})` : "1 = 0";
+    const inScope2 = sessionIds.length ? `ar2.session_id IN (${marks})` : "1 = 0";
+    const expectedWhere = ["s.course_id = ce.course_id", "s.started_at >= ce.enrolled_at"];
+    const expectedParams: unknown[] = [];
+    if (semesterId) {
+      expectedWhere.push("(s.semester_id = ? OR s.semester_id IS NULL)");
+      expectedParams.push(semesterId);
+    }
+    if (filters.from != null) {
+      expectedWhere.push("s.started_at >= ?");
+      expectedParams.push(filters.from);
+    }
+    if (filters.to != null) {
+      expectedWhere.push("s.started_at <= ?");
+      expectedParams.push(filters.to);
+    }
 
     // One row per enrolled student with the four independent tallies.
     //
@@ -1941,22 +2041,35 @@ export class Repo {
     const rows = await this.all<Row>(
       `SELECT u.id, u.name, u.matric_no, u.role,
         (SELECT COUNT(*) FROM attendance_records ar
-           WHERE ar.course_id = ? AND ar.student_id = u.id AND ar.status = 'present') AS present,
+           WHERE ar.course_id = ? AND ar.student_id = u.id AND ar.status = 'present' AND ${inScope}) AS present,
         (SELECT COUNT(*) FROM attendance_records ar
-           WHERE ar.course_id = ? AND ar.student_id = u.id AND ar.status = 'late') AS late,
+           WHERE ar.course_id = ? AND ar.student_id = u.id AND ar.status = 'late' AND ${inScope}) AS late,
         (SELECT COUNT(*) FROM attendance_records ar
-           WHERE ar.course_id = ? AND ar.student_id = u.id AND ar.status = 'excused') AS excused,
+           WHERE ar.course_id = ? AND ar.student_id = u.id AND ar.status = 'excused' AND ${inScope}) AS excused,
         (SELECT COUNT(*) FROM attendance_records ar
-           WHERE ar.course_id = ? AND ar.student_id = u.id AND ar.status = 'absent') AS absent,
+           WHERE ar.course_id = ? AND ar.student_id = u.id AND ar.status = 'absent' AND ${inScope}) AS absent,
         (SELECT COUNT(DISTINCT ar2.device_id) FROM attendance_records ar2
-           WHERE ar2.course_id = ? AND ar2.student_id = u.id) AS devices,
+           WHERE ar2.course_id = ? AND ar2.student_id = u.id AND ${inScope2}) AS devices,
         (SELECT COUNT(*) FROM sessions s
-           WHERE s.course_id = ? AND s.started_at >= ce.enrolled_at) AS expected_sessions
+           WHERE ${expectedWhere.join(" AND ")}) AS expected_sessions
        FROM course_enrollments ce
        JOIN users u ON u.id = ce.student_id
        WHERE ce.course_id = ?
        ORDER BY u.name ASC`,
-      [courseId, courseId, courseId, courseId, courseId, courseId, courseId],
+      [
+        courseId,
+        ...sessionIds,
+        courseId,
+        ...sessionIds,
+        courseId,
+        ...sessionIds,
+        courseId,
+        ...sessionIds,
+        courseId,
+        ...sessionIds,
+        ...expectedParams,
+        courseId,
+      ],
     );
 
     const students: CourseReportStudent[] = rows.map((r) => {
@@ -2015,7 +2128,16 @@ export class Repo {
         title: course.title,
         level: course.level,
         units: course.units,
+        category: course.category,
+        departmentId: optStr(meta?.department_id),
+        departmentName: optStr(meta?.department_name),
+        departmentCode: optStr(meta?.department_code),
+        facultyName: optStr(meta?.faculty_name),
+        lecturerId: course.lecturerId,
+        lecturerName: optStr(meta?.lecturer_name),
+        semesterId: course.semesterId,
       },
+      term: semesterId ? ((await this.academicPeriod()).semester ?? null) : null,
       totalSessions: total,
       sessions: [...sessions].sort((a, b) => a.startedAt - b.startedAt),
       students,
@@ -2303,6 +2425,686 @@ export class Repo {
     };
   }
 
+  // ── Academic structure: faculties, sessions, semesters (plan §4.1) ──
+  //
+  // The brief's sidebar and filter bar need the institution hierarchy
+  // (Faculty → Department → Course) and the period model (Session → Semester).
+  // Everything here is CRUD plus one resolver (`academicPeriod`) that the top bar,
+  // the filters, and the exports all read from.
+
+  private rowToFaculty(r: Row): Faculty {
+    return {
+      id: str(r.id),
+      name: str(r.name),
+      code: str(r.code),
+      deanUserId: optStr(r.dean_user_id),
+      icon: optStr(r.icon),
+      color: optStr(r.color),
+      createdAt: num(r.created_at),
+    };
+  }
+
+  private rowToAcademicSession(r: Row): AcademicSession {
+    return {
+      id: str(r.id),
+      name: str(r.name),
+      code: str(r.code),
+      startsOn: optNum(r.starts_on),
+      endsOn: optNum(r.ends_on),
+      isCurrent: num(r.is_current) === 1,
+      createdAt: num(r.created_at),
+    };
+  }
+
+  private rowToSemester(r: Row): Semester {
+    return {
+      id: str(r.id),
+      academicSessionId: str(r.academic_session_id),
+      name: str(r.name),
+      sequence: num(r.sequence),
+      startsOn: optNum(r.starts_on),
+      endsOn: optNum(r.ends_on),
+      isCurrent: num(r.is_current) === 1,
+      finalizedAt: optNum(r.finalized_at),
+      createdAt: num(r.created_at),
+    };
+  }
+
+  async listFaculties(): Promise<Faculty[]> {
+    const rows = await this.all<Row>("SELECT * FROM faculties ORDER BY name ASC");
+    return rows.map((r) => this.rowToFaculty(r));
+  }
+
+  async createFaculty(input: {
+    name: string;
+    code: string;
+    deanUserId?: string;
+    icon?: string;
+    color?: string;
+  }): Promise<Faculty> {
+    const code = input.code.toUpperCase().trim();
+    const dup = await this.first<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM faculties WHERE LOWER(code) = LOWER(?)",
+      [code],
+    );
+    if (dup && dup.c > 0) throw new BusinessError("A faculty with this code already exists");
+    const f: Faculty = {
+      id: nanoid(8),
+      name: input.name.trim(),
+      code,
+      deanUserId: input.deanUserId,
+      icon: input.icon,
+      color: input.color,
+      createdAt: Date.now(),
+    };
+    await this.run(
+      "INSERT INTO faculties (id, name, code, dean_user_id, icon, color, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [f.id, f.name, f.code, f.deanUserId ?? null, f.icon ?? null, f.color ?? null, f.createdAt],
+    );
+    return f;
+  }
+
+  async updateFaculty(
+    id: string,
+    patch: Partial<Pick<Faculty, "name" | "code" | "deanUserId" | "icon" | "color">>,
+  ): Promise<Faculty> {
+    const current = await this.first<Row>("SELECT * FROM faculties WHERE id = ?", [id]);
+    if (!current) throw new BusinessError("Faculty not found");
+    const next = { ...this.rowToFaculty(current), ...patch };
+    if (patch.code) {
+      const code = patch.code.toUpperCase().trim();
+      const dup = await this.first<{ c: number }>(
+        "SELECT COUNT(*) AS c FROM faculties WHERE LOWER(code) = LOWER(?) AND id <> ?",
+        [code, id],
+      );
+      if (dup && dup.c > 0) throw new BusinessError("A faculty with this code already exists");
+      next.code = code;
+    }
+    await this.run(
+      "UPDATE faculties SET name = ?, code = ?, dean_user_id = ?, icon = ?, color = ? WHERE id = ?",
+      [next.name, next.code, next.deanUserId ?? null, next.icon ?? null, next.color ?? null, id],
+    );
+    return next;
+  }
+
+  async deleteFaculty(id: string): Promise<void> {
+    const inUse = await this.first<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM departments WHERE faculty_id = ?",
+      [id],
+    );
+    if (inUse && inUse.c > 0) {
+      throw new BusinessError("Move this faculty's departments elsewhere before deleting it");
+    }
+    await this.run("DELETE FROM faculties WHERE id = ?", [id]);
+  }
+
+  async setDepartmentFaculty(departmentId: string, facultyId: string | null): Promise<void> {
+    const d = await this.first<Row>("SELECT id FROM departments WHERE id = ?", [departmentId]);
+    if (!d) throw new BusinessError("Department not found");
+    if (facultyId) {
+      const f = await this.first<Row>("SELECT id FROM faculties WHERE id = ?", [facultyId]);
+      if (!f) throw new BusinessError("Faculty not found");
+    }
+    await this.run("UPDATE departments SET faculty_id = ? WHERE id = ?", [facultyId, departmentId]);
+  }
+
+  async listAcademicSessions(): Promise<AcademicSession[]> {
+    const rows = await this.all<Row>(
+      "SELECT * FROM academic_sessions ORDER BY is_current DESC, code DESC",
+    );
+    return rows.map((r) => this.rowToAcademicSession(r));
+  }
+
+  async createAcademicSession(input: {
+    name: string;
+    code: string;
+    startsOn?: number;
+    endsOn?: number;
+    makeCurrent?: boolean;
+  }): Promise<AcademicSession> {
+    const code = input.code.trim();
+    const dup = await this.first<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM academic_sessions WHERE LOWER(code) = LOWER(?)",
+      [code],
+    );
+    if (dup && dup.c > 0) throw new BusinessError("That academic session already exists");
+    const s: AcademicSession = {
+      id: nanoid(8),
+      name: input.name.trim(),
+      code,
+      startsOn: input.startsOn,
+      endsOn: input.endsOn,
+      isCurrent: Boolean(input.makeCurrent),
+      createdAt: Date.now(),
+    };
+    await this.run(
+      "INSERT INTO academic_sessions (id, name, code, starts_on, ends_on, is_current, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [
+        s.id,
+        s.name,
+        s.code,
+        s.startsOn ?? null,
+        s.endsOn ?? null,
+        s.isCurrent ? 1 : 0,
+        s.createdAt,
+      ],
+    );
+    // A single current session keeps the top-bar selector unambiguous.
+    if (s.isCurrent) await this.setCurrentAcademicSession(s.id);
+    return s;
+  }
+
+  async setCurrentAcademicSession(id: string): Promise<void> {
+    const s = await this.first<Row>("SELECT id FROM academic_sessions WHERE id = ?", [id]);
+    if (!s) throw new BusinessError("Academic session not found");
+    const before = await this.getSiteSettings();
+    await this.run("UPDATE academic_sessions SET is_current = CASE WHEN id = ? THEN 1 ELSE 0 END", [
+      id,
+    ]);
+    await this.run("UPDATE semesters SET is_current = 0 WHERE academic_session_id <> ?", [id]);
+    // The institution's active session is the one the dashboard reports on.
+    const semesters = await this.listSemesters(id);
+    const current = semesters.find((x) => x.isCurrent) ?? semesters[0];
+    await this.run(
+      "UPDATE site_settings SET current_academic_session_id = ?, current_semester_id = ? WHERE id = 'site'",
+      [id, current ? current.id : null],
+    );
+    if (current && !current.isCurrent) await this.setCurrentSemester(current.id);
+    void before;
+  }
+
+  async listSemesters(academicSessionId?: string): Promise<Semester[]> {
+    const rows = academicSessionId
+      ? await this.all<Row>(
+          "SELECT * FROM semesters WHERE academic_session_id = ? ORDER BY sequence ASC",
+          [academicSessionId],
+        )
+      : await this.all<Row>("SELECT * FROM semesters ORDER BY created_at DESC");
+    return rows.map((r) => this.rowToSemester(r));
+  }
+
+  async createSemester(input: {
+    academicSessionId: string;
+    name: string;
+    sequence?: number;
+    startsOn?: number;
+    endsOn?: number;
+    makeCurrent?: boolean;
+  }): Promise<Semester> {
+    const parent = await this.first<Row>("SELECT id FROM academic_sessions WHERE id = ?", [
+      input.academicSessionId,
+    ]);
+    if (!parent) throw new BusinessError("Academic session not found");
+    const existing = await this.listSemesters(input.academicSessionId);
+    const sequence = input.sequence ?? existing.length + 1;
+    if (existing.some((s) => s.sequence === sequence)) {
+      throw new BusinessError(`This academic session already has a semester ${sequence}`);
+    }
+    const s: Semester = {
+      id: nanoid(8),
+      academicSessionId: input.academicSessionId,
+      name: input.name.trim(),
+      sequence,
+      startsOn: input.startsOn,
+      endsOn: input.endsOn,
+      isCurrent: Boolean(input.makeCurrent),
+      createdAt: Date.now(),
+    };
+    await this.run(
+      `INSERT INTO semesters (id, academic_session_id, name, sequence, starts_on, ends_on, is_current, finalized_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+      [
+        s.id,
+        s.academicSessionId,
+        s.name,
+        s.sequence,
+        s.startsOn ?? null,
+        s.endsOn ?? null,
+        s.isCurrent ? 1 : 0,
+        s.createdAt,
+      ],
+    );
+    if (s.isCurrent) await this.setCurrentSemester(s.id);
+    return s;
+  }
+
+  async updateSemester(
+    id: string,
+    patch: Partial<Pick<Semester, "name" | "startsOn" | "endsOn">>,
+  ): Promise<Semester> {
+    const row = await this.first<Row>("SELECT * FROM semesters WHERE id = ?", [id]);
+    if (!row) throw new BusinessError("Semester not found");
+    const next = { ...this.rowToSemester(row), ...patch };
+    await this.run("UPDATE semesters SET name = ?, starts_on = ?, ends_on = ? WHERE id = ?", [
+      next.name,
+      next.startsOn ?? null,
+      next.endsOn ?? null,
+      id,
+    ]);
+    return next;
+  }
+
+  async setCurrentSemester(id: string): Promise<void> {
+    const s = await this.first<Row>("SELECT * FROM semesters WHERE id = ?", [id]);
+    if (!s) throw new BusinessError("Semester not found");
+    await this.run("UPDATE semesters SET is_current = CASE WHEN id = ? THEN 1 ELSE 0 END", [id]);
+    await this.run(
+      "UPDATE site_settings SET current_semester_id = ?, current_academic_session_id = ? WHERE id = 'site'",
+      [id, str(s.academic_session_id)],
+    );
+    // Courses scoped to another semester keep their history; the active period
+    // is what the dashboard and the default filter resolve to.
+    await this.run("UPDATE academic_sessions SET is_current = CASE WHEN id = ? THEN 1 ELSE 0 END", [
+      str(s.academic_session_id),
+    ]);
+  }
+
+  /** Publish/freeze a period: no new lectures, no corrections without override. */
+  async finalizeSemester(id: string): Promise<Semester> {
+    const row = await this.first<Row>("SELECT * FROM semesters WHERE id = ?", [id]);
+    if (!row) throw new BusinessError("Semester not found");
+    if (num(row.finalized_at) > 0) return this.rowToSemester(row);
+    const now = Date.now();
+    await this.run("UPDATE semesters SET finalized_at = ? WHERE id = ?", [now, id]);
+    // Lock every record in this period so the audit rule ("nobody edits a
+    // published period without an override") is enforced at the data layer too.
+    await this.run("UPDATE attendance_records SET locked = 1 WHERE semester_id = ?", [id]);
+    return (await this.first<Row>("SELECT * FROM semesters WHERE id = ?", [id]))!.id
+      ? this.rowToSemester((await this.first<Row>("SELECT * FROM semesters WHERE id = ?", [id]))!)
+      : this.rowToSemester(row);
+  }
+
+  async reopenSemester(id: string): Promise<Semester> {
+    const row = await this.first<Row>("SELECT * FROM semesters WHERE id = ?", [id]);
+    if (!row) throw new BusinessError("Semester not found");
+    await this.run("UPDATE semesters SET finalized_at = NULL WHERE id = ?", [id]);
+    await this.run("UPDATE attendance_records SET locked = 0 WHERE semester_id = ?", [id]);
+    return this.rowToSemester({ ...row, finalized_at: null });
+  }
+
+  /** The institution's active period plus everything the selector needs. */
+  async academicPeriod(): Promise<AcademicPeriod> {
+    const settings = await this.getSiteSettings();
+    const sessions = await this.listAcademicSessions();
+    const academicSession =
+      sessions.find((s) => s.id === settings.currentAcademicSessionId) ??
+      sessions.find((s) => s.isCurrent) ??
+      sessions[0] ??
+      null;
+    const semesters = academicSession ? await this.listSemesters(academicSession.id) : [];
+    const semester =
+      semesters.find((s) => s.id === settings.currentSemesterId) ??
+      semesters.find((s) => s.isCurrent) ??
+      semesters[semesters.length - 1] ??
+      null;
+    return { academicSession, semester, academicSessions: sessions, semesters };
+  }
+
+  // ── The All-Courses attendance report (brief §4 + §6) ──
+  //
+  // One pass over the catalogue with three aggregate queries (courses, lecture
+  // counts, status tallies) — never a query per course, so a 500-course
+  // institution stays fast. Every rate is opportunity-weighted (plan §8).
+  //
+  //   classesHeld      lectures that actually ran in the window
+  //   expected         Σ (registered students × lectures they were expected at);
+  //                    computed from the roster join, so it is correct even for
+  //                    lectures recorded before absences were materialised
+  //   attended         present + late
+  //   classesAttended  opportunity-weighted average lectures attended per student
+  //                    (the brief's "Classes Attended" column: rate × classesHeld)
+  async coursesReport(filters: ReportFilters = {}): Promise<CoursesReport> {
+    const settings = await this.getSiteSettings();
+    const period = await this.academicPeriod();
+    const semesterId = filters.semesterId ?? period.semester?.id;
+    const threshold = settings.atRiskThreshold;
+    const now = Date.now();
+
+    // ── 1. Catalogue rows (with the filters that apply to a course itself) ──
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (filters.courseId) {
+      where.push("c.id = ?");
+      params.push(filters.courseId);
+    }
+    if (filters.departmentId) {
+      where.push("c.department_id = ?");
+      params.push(filters.departmentId);
+    }
+    if (filters.facultyId) {
+      where.push("d.faculty_id = ?");
+      params.push(filters.facultyId);
+    }
+    if (filters.lecturerId) {
+      where.push("c.lecturer_id = ?");
+      params.push(filters.lecturerId);
+    }
+    if (filters.category) {
+      where.push("c.category = ?");
+      params.push(filters.category);
+    }
+    if (semesterId) {
+      where.push("(c.semester_id = ? OR c.semester_id IS NULL)");
+      params.push(semesterId);
+    }
+    if (filters.search) {
+      const like = `%${filters.search.trim().toLowerCase()}%`;
+      where.push(
+        `(LOWER(c.code) LIKE ? OR LOWER(c.title) LIKE ? OR LOWER(COALESCE(d.name, '')) LIKE ?
+          OR LOWER(COALESCE(u.name, '')) LIKE ? OR LOWER(COALESCE(d.code, '')) LIKE ?)`,
+      );
+      params.push(like, like, like, like, like);
+    }
+    const courseRows = await this.all<Row>(
+      `SELECT c.id, c.code, c.title, c.department_id, c.lecturer_id, c.semester_id, c.level, c.units,
+              c.category,
+              d.name AS department_name, d.code AS department_code, d.faculty_id,
+              f.name AS faculty_name, u.name AS lecturer_name,
+              (SELECT COUNT(*) FROM course_enrollments ce WHERE ce.course_id = c.id) AS enrolled
+       FROM courses c
+       LEFT JOIN departments d ON d.id = c.department_id
+       LEFT JOIN faculties   f ON f.id = d.faculty_id
+       LEFT JOIN users       u ON u.id = c.lecturer_id
+       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+       ORDER BY c.code ASC`,
+      params,
+    );
+    if (courseRows.length === 0) {
+      return {
+        rows: [],
+        totals: emptyTotals(),
+        meta: {
+          generatedAt: now,
+          filters: { ...filters, semesterId },
+          period: {
+            academicSession: period.academicSession ?? undefined,
+            semester: period.semester ?? undefined,
+          },
+          calculation: "opportunity-weighted",
+          threshold,
+        },
+        page: 1,
+        pageSize: filters.pageSize ?? 25,
+        total: 0,
+      };
+    }
+    const ids = courseRows.map((r) => str(r.id));
+    const marks = ids.map(() => "?").join(",");
+
+    // ── 2. Lectures that ran in the window ──
+    // A lecture counts as held once it has started (a scheduled future leg is
+    // not yet a class the administrator should be reporting on).
+    const sessionWhere: string[] = [`s.course_id IN (${marks})`, "s.started_at <= ?"];
+    const sessionParams: unknown[] = [...ids, now];
+    if (semesterId) {
+      sessionWhere.push("(s.semester_id = ? OR s.semester_id IS NULL)");
+      sessionParams.push(semesterId);
+    }
+    if (filters.from != null) {
+      sessionWhere.push("s.started_at >= ?");
+      sessionParams.push(filters.from);
+    }
+    if (filters.to != null) {
+      sessionWhere.push("s.started_at <= ?");
+      sessionParams.push(filters.to);
+    }
+    const sessionRows = await this.all<Row>(
+      `SELECT s.course_id, COUNT(*) AS held
+       FROM sessions s
+       WHERE ${sessionWhere.join(" AND ")}
+       GROUP BY s.course_id`,
+      sessionParams,
+    );
+    const heldBy = new Map(sessionRows.map((r) => [str(r.course_id), num(r.held)]));
+
+    // ── 3. Opportunities (the denominator) and tallies (the numerators) ──
+    // Opportunities are joined from the roster, so a student who enrolled after a
+    // lecture never inflates that course's denominator.
+    const opportunityRows = await this.all<Row>(
+      `SELECT s.course_id, COUNT(*) AS opportunities
+       FROM sessions s
+       JOIN course_enrollments ce ON ce.course_id = s.course_id AND ce.enrolled_at <= s.started_at
+       WHERE ${sessionWhere.join(" AND ")}
+       GROUP BY s.course_id`,
+      sessionParams,
+    );
+    const expectedBy = new Map(
+      opportunityRows.map((r) => [str(r.course_id), num(r.opportunities)]),
+    );
+
+    const recordWhere: string[] = [`ar.course_id IN (${marks})`, "ar.timestamp <= ?"];
+    const recordParams: unknown[] = [...ids, now];
+    if (semesterId) {
+      recordWhere.push("(ar.semester_id = ? OR ar.semester_id IS NULL)");
+      recordParams.push(semesterId);
+    }
+    if (filters.from != null) {
+      recordWhere.push("ar.timestamp >= ?");
+      recordParams.push(filters.from);
+    }
+    if (filters.to != null) {
+      recordWhere.push("ar.timestamp <= ?");
+      recordParams.push(filters.to);
+    }
+    if (filters.status) {
+      recordWhere.push("ar.status = ?");
+      recordParams.push(filters.status);
+    }
+    const statusRows = await this.all<Row>(
+      `SELECT ar.course_id, ar.status, COUNT(*) AS c
+       FROM attendance_records ar
+       WHERE ${recordWhere.join(" AND ")}
+       GROUP BY ar.course_id, ar.status`,
+      recordParams,
+    );
+    const tallyBy = new Map<string, StatusCounts>();
+    for (const r of statusRows) {
+      const key = str(r.course_id);
+      const tally = tallyBy.get(key) ?? emptyCounts();
+      const status = str(r.status) as keyof StatusCounts;
+      if (status in tally) tally[status] += num(r.c);
+      tallyBy.set(key, tally);
+    }
+
+    // ── 4. Assemble the brief's twelve columns ──
+    let rows: CourseReportRow[] = courseRows.map((r) => {
+      const id = str(r.id);
+      const tally = tallyBy.get(id) ?? emptyCounts();
+      const classesHeld = heldBy.get(id) ?? 0;
+      const attended = attendedCount(tally);
+      // Expected: the roster-join total when lectures exist, otherwise the
+      // recorded opportunities (a course whose absences were never materialised
+      // must not report 100%).
+      const recorded = tally.present + tally.late + tally.excused + tally.absent;
+      const expected = Math.max(expectedBy.get(id) ?? 0, recorded);
+      const rate = percentage(attended, expected, 1);
+      const absent = Math.max(tally.absent, expected - attended - tally.excused);
+      return {
+        id,
+        code: str(r.code),
+        title: str(r.title),
+        departmentId: str(r.department_id),
+        departmentName: optStr(r.department_name),
+        departmentCode: optStr(r.department_code),
+        facultyId: optStr(r.faculty_id),
+        facultyName: optStr(r.faculty_name),
+        lecturerId: optStr(r.lecturer_id),
+        lecturerName: optStr(r.lecturer_name),
+        semesterId: optStr(r.semester_id),
+        level: str(r.level),
+        units: num(r.units),
+        category: optStr(r.category),
+        enrolled: num(r.enrolled),
+        classesHeld,
+        // Average lectures attended per student (matches the brief's worked
+        // example: 14 of 16 lectures → 87.5%).
+        classesAttended: rate === null ? 0 : Math.round(classesHeld * (rate / 100) * 10) / 10,
+        present: tally.present,
+        absent,
+        late: tally.late,
+        excused: tally.excused,
+        attended,
+        expected,
+        rate,
+        health: health(rate, threshold),
+      };
+    });
+
+    // ── 5. Sorting (server-side, so pagination is stable) ──
+    const sort = filters.sort ?? "code";
+    const dir = filters.dir === "desc" ? -1 : 1;
+    const numeric = (v: number | null): number => (v === null ? -1 : v);
+    rows = rows.sort((a, b) => {
+      let cmp: number;
+      switch (sort) {
+        case "title":
+          cmp = a.title.localeCompare(b.title);
+          break;
+        case "department":
+          cmp = (a.departmentCode ?? "").localeCompare(b.departmentCode ?? "");
+          break;
+        case "enrolled":
+          cmp = a.enrolled - b.enrolled;
+          break;
+        case "classesHeld":
+          cmp = a.classesHeld - b.classesHeld;
+          break;
+        case "classesAttended":
+          cmp = a.classesAttended - b.classesAttended;
+          break;
+        case "rate":
+          cmp = numeric(a.rate) - numeric(b.rate);
+          break;
+        case "present":
+          cmp = a.present - b.present;
+          break;
+        case "absent":
+          cmp = a.absent - b.absent;
+          break;
+        case "late":
+          cmp = a.late - b.late;
+          break;
+        default:
+          cmp = a.code.localeCompare(b.code);
+      }
+      return cmp * dir || a.code.localeCompare(b.code);
+    });
+
+    const totals: CourseReportTotals = rows.reduce((acc, r) => {
+      acc.courses += 1;
+      acc.enrolled += r.enrolled;
+      acc.classesHeld += r.classesHeld;
+      acc.classesAttended = Math.round((acc.classesAttended + r.classesAttended) * 10) / 10;
+      acc.present += r.present;
+      acc.absent += r.absent;
+      acc.late += r.late;
+      acc.excused += r.excused;
+      acc.attended += r.attended;
+      acc.expected += r.expected;
+      return acc;
+    }, emptyTotals());
+    totals.rate = weightedPercentage(
+      rows.map((r) => ({ attended: r.attended, expected: r.expected })),
+      1,
+    );
+
+    // ── 6. Pagination (the totals describe the *filtered* set, not the page) ──
+    const total = rows.length;
+    const pageSize = Math.min(500, Math.max(1, filters.pageSize ?? 25));
+    const page = Math.max(1, Math.floor(filters.page ?? 1));
+    const start = (page - 1) * pageSize;
+    const paged = rows.slice(start, start + pageSize);
+
+    return {
+      rows: paged,
+      totals,
+      meta: {
+        generatedAt: now,
+        filters: { ...filters, semesterId, sort, dir: filters.dir ?? "asc" },
+        period: {
+          academicSession: period.academicSession ?? undefined,
+          semester: period.semester ?? undefined,
+        },
+        calculation: "opportunity-weighted",
+        threshold,
+      },
+      page,
+      pageSize,
+      total,
+    };
+  }
+
+  /** Per-lecture breakdown for the course detail page (brief §5). */
+  async courseSessionStats(
+    courseId: string,
+    filters: ReportFilters = {},
+  ): Promise<CourseSessionStat[]> {
+    const where = ["s.course_id = ?"];
+    const params: unknown[] = [courseId];
+    if (filters.semesterId) {
+      where.push("(s.semester_id = ? OR s.semester_id IS NULL)");
+      params.push(filters.semesterId);
+    }
+    if (filters.from != null) {
+      where.push("s.started_at >= ?");
+      params.push(filters.from);
+    }
+    if (filters.to != null) {
+      where.push("s.started_at <= ?");
+      params.push(filters.to);
+    }
+    const sessions = await this.all<Row>(
+      `SELECT s.id, s.started_at, s.ended_at, s.topic FROM sessions s
+       WHERE ${where.join(" AND ")} ORDER BY s.started_at ASC`,
+      params,
+    );
+    if (sessions.length === 0) return [];
+    const ids = sessions.map((r) => str(r.id));
+    const marks = ids.map(() => "?").join(",");
+    const rows = await this.all<Row>(
+      `SELECT session_id, status, COUNT(*) AS c FROM attendance_records
+       WHERE session_id IN (${marks}) GROUP BY session_id, status`,
+      ids,
+    );
+    const tally = new Map<string, StatusCounts>();
+    for (const r of rows) {
+      const key = str(r.session_id);
+      const t = tally.get(key) ?? emptyCounts();
+      const status = str(r.status) as keyof StatusCounts;
+      if (status in t) t[status] += num(r.c);
+      tally.set(key, t);
+    }
+    // Expected per lecture = students on the roster when it started.
+    const rosterRows = await this.all<Row>(
+      `SELECT s.id AS session_id, COUNT(*) AS expected
+       FROM sessions s
+       JOIN course_enrollments ce ON ce.course_id = s.course_id AND ce.enrolled_at <= s.started_at
+       WHERE s.id IN (${marks})
+       GROUP BY s.id`,
+      ids,
+    );
+    const expectedBy = new Map(rosterRows.map((r) => [str(r.session_id), num(r.expected)]));
+    return sessions.map((s) => {
+      const id = str(s.id);
+      const t = tally.get(id) ?? emptyCounts();
+      const attended = attendedCount(t);
+      const recorded = t.present + t.late + t.excused + t.absent;
+      const expected = Math.max(expectedBy.get(id) ?? 0, recorded);
+      return {
+        sessionId: id,
+        startedAt: num(s.started_at),
+        endedAt: optNum(s.ended_at),
+        topic: optStr(s.topic),
+        present: t.present,
+        late: t.late,
+        excused: t.excused,
+        absent: Math.max(t.absent, expected - attended - t.excused),
+        expected,
+        rate: percentage(attended, expected, 1),
+      };
+    });
+  }
+
   // ── Site settings ──
 
   private async readSettings(): Promise<SiteSettings | null> {
@@ -2326,12 +3128,17 @@ export class Repo {
       // Nullable columns must be bound as null, never undefined.
       primaryColor: merged.primaryColor ?? null,
       contactEmail: merged.contactEmail ?? null,
+      currentAcademicSessionId: merged.currentAcademicSessionId ?? null,
+      currentSemesterId: merged.currentSemesterId ?? null,
+      logoUrl: merged.logoUrl ?? null,
+      reportFooterNote: merged.reportFooterNote ?? null,
     };
     await this.run(
       `INSERT INTO site_settings (id, institution_name, at_risk_threshold, timezone, late_counts_as_attended,
         excused_counts_as_absent, marquee_items, testimonials,
-        demo_accounts_enabled, demo_password, demo_email_domain, show_fake_stats, primary_color, contact_email)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        demo_accounts_enabled, demo_password, demo_email_domain, show_fake_stats, primary_color, contact_email,
+        current_academic_session_id, current_semester_id, logo_url, report_footer_note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
         institution_name = excluded.institution_name,
         at_risk_threshold = excluded.at_risk_threshold,
@@ -2345,7 +3152,11 @@ export class Repo {
         demo_email_domain = excluded.demo_email_domain,
         show_fake_stats = excluded.show_fake_stats,
         primary_color = excluded.primary_color,
-        contact_email = excluded.contact_email`,
+        contact_email = excluded.contact_email,
+        current_academic_session_id = COALESCE(excluded.current_academic_session_id, site_settings.current_academic_session_id),
+        current_semester_id = COALESCE(excluded.current_semester_id, site_settings.current_semester_id),
+        logo_url = excluded.logo_url,
+        report_footer_note = excluded.report_footer_note`,
       [
         next.id,
         next.institutionName,
@@ -2361,6 +3172,10 @@ export class Repo {
         next.showFakeStats ? 1 : 0,
         next.primaryColor,
         next.contactEmail,
+        next.currentAcademicSessionId,
+        next.currentSemesterId,
+        next.logoUrl,
+        next.reportFooterNote,
       ],
     );
     return next;

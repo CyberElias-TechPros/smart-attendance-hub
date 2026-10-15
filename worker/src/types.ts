@@ -1,3 +1,5 @@
+import type { AttendanceHealth } from "../../shared/attendance-math";
+
 // Domain types shared across the SLAMS API worker.
 // The frontend mirrors these contracts in src/lib/types.ts — keep in sync.
 
@@ -39,6 +41,9 @@ export interface Course {
   color?: string;
   category?: string;
   description?: string;
+  /** Academic period this course is delivered in. Lectures and records inherit
+   *  it, which is what makes "filter by semester" and period reports work. */
+  semesterId?: string;
   /** Course-level default venue geofence. When set, every session (one-off or
    *  recurring) that doesn't pin its own location inherits this venue lock —
    *  so students can't mark attendance far from the classroom. */
@@ -176,6 +181,13 @@ export interface SiteSettings {
   lateCountsAsAttended: boolean;
   /** Whether an approved excuse still occupies the denominator (plan D3). */
   excusedCountsAsAbsent: boolean;
+  /** Institution's active period, resolved by the top-bar selector. */
+  currentAcademicSessionId: string | null;
+  currentSemesterId: string | null;
+  /** Optional logo shown on printed reports (brief §7). */
+  logoUrl: string | null;
+  /** Optional note printed in the footer of every report. */
+  reportFooterNote: string | null;
   marqueeItems: string[];
   testimonials: Testimonial[];
   demoAccountsEnabled: boolean;
@@ -285,7 +297,23 @@ export interface CourseReportStudent {
 }
 
 export interface CourseReport {
-  course: { id: string; code: string; title: string; level: string; units: number };
+  course: {
+    id: string;
+    code: string;
+    title: string;
+    level: string;
+    units: number;
+    category?: string;
+    departmentId?: string;
+    departmentName?: string;
+    departmentCode?: string;
+    facultyName?: string;
+    lecturerId?: string;
+    lecturerName?: string;
+    semesterId?: string;
+  };
+  /** The academic period the figures describe (undefined = all periods). */
+  term?: Semester | null;
   totalSessions: number;
   sessions: AttendanceSession[];
   students: CourseReportStudent[];
@@ -435,4 +463,159 @@ export interface Paginated<T> {
 export interface AttendanceMutationResult {
   record: AttendanceRecord;
   audited: boolean;
+}
+
+// ── Academic structure (plan §4.1 / P1) ────────────────────────────────────
+
+export interface Faculty {
+  id: string;
+  name: string;
+  code: string;
+  deanUserId?: string;
+  icon?: string;
+  color?: string;
+  createdAt: number;
+}
+
+export interface AcademicSession {
+  id: string;
+  name: string;
+  code: string;
+  startsOn?: number;
+  endsOn?: number;
+  isCurrent: boolean;
+  createdAt: number;
+}
+
+export interface Semester {
+  id: string;
+  academicSessionId: string;
+  name: string;
+  sequence: number;
+  startsOn?: number;
+  endsOn?: number;
+  isCurrent: boolean;
+  /** Set once the period is published — lectures and corrections are frozen. */
+  finalizedAt?: number;
+  createdAt: number;
+}
+
+/** Everything the top-bar period selector needs in one payload. */
+export interface AcademicPeriod {
+  academicSession: AcademicSession | null;
+  semester: Semester | null;
+  academicSessions: AcademicSession[];
+  semesters: Semester[];
+}
+
+/** The filters shared by the All-Courses table, the exports, and the print
+ *  view (brief §6). One object, one meaning, everywhere. */
+export interface ReportFilters {
+  academicSessionId?: string;
+  semesterId?: string;
+  facultyId?: string;
+  departmentId?: string;
+  courseId?: string;
+  lecturerId?: string;
+  from?: number;
+  to?: number;
+  status?: AttendanceStatus;
+  search?: string;
+  /** Free-text course catalogue grouping (courses.category). */
+  category?: string;
+  sort?: ReportSortKey;
+  dir?: "asc" | "desc";
+  page?: number;
+  pageSize?: number;
+}
+
+export type ReportSortKey =
+  | "code"
+  | "title"
+  | "department"
+  | "enrolled"
+  | "classesHeld"
+  | "classesAttended"
+  | "rate"
+  | "present"
+  | "absent"
+  | "late";
+
+/** One row of the brief's §4 table — every column computed from records. */
+export interface CourseReportRow {
+  id: string;
+  code: string;
+  title: string;
+  departmentId: string;
+  departmentName?: string;
+  departmentCode?: string;
+  facultyId?: string;
+  facultyName?: string;
+  lecturerId?: string;
+  lecturerName?: string;
+  semesterId?: string;
+  level: string;
+  units: number;
+  /** Total registered students. */
+  enrolled: number;
+  /** Lectures that actually ran in the selected window. */
+  classesHeld: number;
+  /** Opportunity-weighted average classes attended per student (brief §4). */
+  classesAttended: number;
+  present: number;
+  absent: number;
+  late: number;
+  excused: number;
+  attended: number;
+  expected: number;
+  /** Opportunity-weighted rate in percent, null when no lecture ran. */
+  rate: number | null;
+  health: AttendanceHealth | null;
+}
+
+export interface CourseReportTotals {
+  courses: number;
+  enrolled: number;
+  classesHeld: number;
+  classesAttended: number;
+  present: number;
+  absent: number;
+  late: number;
+  excused: number;
+  attended: number;
+  expected: number;
+  rate: number | null;
+}
+
+export interface CoursesReportMeta {
+  generatedAt: number;
+  filters: ReportFilters;
+  period: { academicSession?: AcademicSession; semester?: Semester };
+  /** Stated in the payload so a report can never claim a different method. */
+  calculation: "opportunity-weighted";
+  threshold: number;
+  truncated?: boolean;
+}
+
+export interface CoursesReport {
+  rows: CourseReportRow[];
+  totals: CourseReportTotals;
+  meta: CoursesReportMeta;
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+/** Per-lecture row for the course detail page (brief §5). */
+export interface CourseSessionStat {
+  sessionId: string;
+  startedAt: number;
+  endedAt?: number;
+  topic?: string;
+  present: number;
+  late: number;
+  excused: number;
+  absent: number;
+  expected: number;
+  rate: number | null;
 }
