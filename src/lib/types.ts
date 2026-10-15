@@ -89,6 +89,13 @@ export interface SiteSettings {
   lateCountsAsAttended: boolean;
   /** Whether an approved excuse still occupies the denominator (plan D3). */
   excusedCountsAsAbsent: boolean;
+  /**
+   * Apply the institution's "below the attendance threshold ⇒ barred from the
+   * examination" policy on the Results page (plan §4.4 / P4.4). Off by default:
+   * the page still *reports* the split, it just does not assert the consequence
+   * until the institution says it does.
+   */
+  barredFromExamBelowThreshold: boolean;
   /** The institution's active period, as resolved by the top-bar selector. */
   currentAcademicSessionId: string | null;
   currentSemesterId: string | null;
@@ -537,6 +544,102 @@ export interface CourseSessionStat {
 // One row per recipient, written by `Repo.notify()`. `audience` records *why*
 // somebody received a row, which is what lets the inbox distinguish a message
 // addressed to one person from a course-wide or role-wide broadcast.
+
+// ─── Examinations & results (plan §4.4 / P4.3) ──────────────────────────────
+
+/** ca | test | exam | practical — the brief's Examinations vocabulary. */
+export type ExamKind = "ca" | "test" | "exam" | "practical";
+
+export interface Exam {
+  id: string;
+  courseId: string;
+  courseCode?: string;
+  courseTitle?: string;
+  departmentId?: string;
+  departmentName?: string;
+  semesterId?: string;
+  semesterName?: string;
+  title: string;
+  kind: ExamKind;
+  /** Contribution to the final score, in percent (optional). */
+  weight?: number;
+  maxScore: number;
+  scheduledAt?: number;
+  durationMinutes?: number;
+  venue?: string;
+  room?: string;
+  /** Results released to students. Unpublished results stay staff-visible. */
+  published: boolean;
+  createdBy?: string;
+  createdAt: number;
+  /** How many students have a score recorded, and the roster size. */
+  marked?: number;
+  enrolled?: number;
+}
+
+export interface ExamResult {
+  id: string;
+  examId: string;
+  courseId: string;
+  studentId: string;
+  studentName?: string;
+  matricNo?: string;
+  score: number | null;
+  grade?: string;
+  enteredBy?: string;
+  updatedAt: number;
+}
+
+/** A student's attendance-versus-performance pair (plan P4.4). */
+export interface ResultAnalyticsRow {
+  studentId: string;
+  studentName: string;
+  matricNo: string;
+  /** Attendance opportunity rate in percent, or null when no lecture ran. */
+  attendanceRate: number | null;
+  attended: number;
+  expected: number;
+  /** Weighted final score across the course's exams, in percent, or null. */
+  finalPercent: number | null;
+  letterGrade?: string;
+  /** Whether the attendance policy bars this student from the exam. */
+  barred: boolean;
+  /** Per-exam scores, keyed by exam id (used by the scatter's tooltip). */
+  scores: Record<string, number | null>;
+}
+
+export interface ResultAnalytics {
+  course: { id: string; code: string; title: string; departmentName?: string };
+  threshold: number;
+  /** Whether the institution applies the "below threshold ⇒ barred" policy. */
+  policyEnabled: boolean;
+  exams: Array<{ id: string; title: string; kind: ExamKind; maxScore: number; weight?: number }>;
+  rows: ResultAnalyticsRow[];
+  summary: {
+    students: number;
+    barred: number;
+    /** Pearson correlation between attendance and final score, or null. */
+    correlation: number | null;
+    /** Mean final score of the students above/below the threshold. */
+    meanAbove: number | null;
+    meanBelow: number | null;
+    /** How many students would pass by score but are barred by attendance. */
+    barredButPassing: number;
+  };
+  meta: { generatedAt: number; threshold: number; filters: ReportFilters };
+}
+
+export interface ReportSnapshot {
+  id: string;
+  scope: string;
+  entityId?: string;
+  label: string;
+  payload: unknown;
+  totals?: Record<string, number | null>;
+  rowCount: number;
+  createdBy?: string;
+  createdAt: number;
+}
 
 export interface Notification {
   id: string;

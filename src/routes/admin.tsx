@@ -5,6 +5,7 @@ import {
   Bell,
   CalendarCheck,
   CalendarClock,
+  ClipboardList,
   CirclePlus,
   LayoutDashboard,
   GraduationCap,
@@ -18,6 +19,7 @@ import {
   ScrollText,
   Settings,
   Settings2,
+  Trophy,
   Tags,
 } from "lucide-react";
 
@@ -41,6 +43,8 @@ const nav: NavItem[] = [
   },
   { to: "/admin/timetable", label: "Timetable", icon: CalendarClock },
   { to: "/admin/attendance", label: "Attendance", icon: CalendarCheck },
+  { to: "/admin/examinations", label: "Examinations", icon: ClipboardList },
+  { to: "/admin/results", label: "Results", icon: Trophy },
   { to: "/admin/notifications", label: "Notifications", icon: Bell },
   { to: "/admin/reports", label: "Reports", icon: FileBarChart },
   { to: "/admin/audit", label: "Audit trail", icon: History },

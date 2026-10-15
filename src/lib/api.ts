@@ -22,8 +22,12 @@ import type {
   CoursesReport,
   Department,
   Faculty,
+  Exam,
+  ExamKind,
+  ExamResult,
   FacultyReport,
   NotificationsPage,
+  ResultAnalytics,
   OpenSession,
   Paginated,
   PublicSettings,
@@ -508,6 +512,64 @@ export const notifications = {
       method: "POST",
     }),
   markAllRead: () => request<{ marked: number }>(`/api/notifications/read-all`, { method: "POST" }),
+};
+
+// ─── Examinations & results (plan §4.4 / P4.3) ──────────────────────────────
+
+export const exams = {
+  list: (query: { courseId?: string; semesterId?: string } = {}) =>
+    request<Exam[]>(`/api/exams${reportQuery(query as ReportFilters)}`),
+  get: (id: string) =>
+    request<{ exam: Exam; results: ExamResult[] }>(`/api/exams/${encodeURIComponent(id)}`),
+  create: (input: {
+    courseId: string;
+    title: string;
+    kind?: ExamKind;
+    weight?: number | null;
+    maxScore?: number;
+    scheduledAt?: number | null;
+    durationMinutes?: number | null;
+    venue?: string;
+    room?: string;
+    semesterId?: string;
+  }) => request<Exam>(`/api/exams`, { method: "POST", body: input }),
+  update: (
+    id: string,
+    input: {
+      title?: string;
+      kind?: ExamKind;
+      weight?: number | null;
+      maxScore?: number;
+      scheduledAt?: number | null;
+      durationMinutes?: number | null;
+      venue?: string;
+      room?: string;
+      published?: boolean;
+    },
+  ) => request<Exam>(`/api/exams/${encodeURIComponent(id)}`, { method: "PATCH", body: input }),
+  remove: (id: string) =>
+    request<{ ok: boolean; removed: number }>(`/api/exams/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  /** Marks for one exam — a `score: null` row clears that student's mark. */
+  saveResults: (
+    id: string,
+    rows: Array<{ studentId: string; score: number | null; grade?: string }>,
+  ) =>
+    request<{ ok: boolean; saved: number; cleared: number }>(
+      `/api/exams/${encodeURIComponent(id)}/results`,
+      { method: "POST", body: { rows } },
+    ),
+  deleteResult: (examId: string, studentId: string) =>
+    request<{ ok: boolean }>(
+      `/api/exams/${encodeURIComponent(examId)}/results/${encodeURIComponent(studentId)}`,
+      { method: "DELETE" },
+    ),
+  /** Attendance × performance for a course (plan P4.4). */
+  analytics: (courseId: string, filters: ReportFilters = {}) =>
+    request<ResultAnalytics>(
+      `/api/reports/courses/${encodeURIComponent(courseId)}/analytics${reportQuery(filters)}`,
+    ),
 };
 
 export const reports = {

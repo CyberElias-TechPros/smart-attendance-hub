@@ -26,10 +26,12 @@ import { Route as LecturerCoursesRouteImport } from './routes/lecturer.courses'
 import { Route as AdminTimetableRouteImport } from './routes/admin.timetable'
 import { Route as AdminStudentsRouteImport } from './routes/admin.students'
 import { Route as AdminSettingsRouteImport } from './routes/admin.settings'
+import { Route as AdminResultsRouteImport } from './routes/admin.results'
 import { Route as AdminReportsRouteImport } from './routes/admin.reports'
 import { Route as AdminNotificationsRouteImport } from './routes/admin.notifications'
 import { Route as AdminLecturersRouteImport } from './routes/admin.lecturers'
 import { Route as AdminFacultiesRouteImport } from './routes/admin.faculties'
+import { Route as AdminExaminationsRouteImport } from './routes/admin.examinations'
 import { Route as AdminDepartmentsRouteImport } from './routes/admin.departments'
 import { Route as AdminCoursesRouteImport } from './routes/admin.courses'
 import { Route as AdminAuditRouteImport } from './routes/admin.audit'
@@ -128,6 +130,11 @@ const AdminSettingsRoute = AdminSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => AdminRoute,
 } as any)
+const AdminResultsRoute = AdminResultsRouteImport.update({
+  id: '/results',
+  path: '/results',
+  getParentRoute: () => AdminRoute,
+} as any)
 const AdminReportsRoute = AdminReportsRouteImport.update({
   id: '/reports',
   path: '/reports',
@@ -146,6 +153,11 @@ const AdminLecturersRoute = AdminLecturersRouteImport.update({
 const AdminFacultiesRoute = AdminFacultiesRouteImport.update({
   id: '/faculties',
   path: '/faculties',
+  getParentRoute: () => AdminRoute,
+} as any)
+const AdminExaminationsRoute = AdminExaminationsRouteImport.update({
+  id: '/examinations',
+  path: '/examinations',
   getParentRoute: () => AdminRoute,
 } as any)
 const AdminDepartmentsRoute = AdminDepartmentsRouteImport.update({
@@ -222,10 +234,12 @@ export interface FileRoutesByFullPath {
   '/admin/audit': typeof AdminAuditRoute
   '/admin/courses': typeof AdminCoursesRouteWithChildren
   '/admin/departments': typeof AdminDepartmentsRoute
+  '/admin/examinations': typeof AdminExaminationsRoute
   '/admin/faculties': typeof AdminFacultiesRoute
   '/admin/lecturers': typeof AdminLecturersRoute
   '/admin/notifications': typeof AdminNotificationsRoute
   '/admin/reports': typeof AdminReportsRoute
+  '/admin/results': typeof AdminResultsRoute
   '/admin/settings': typeof AdminSettingsRoute
   '/admin/students': typeof AdminStudentsRoute
   '/admin/timetable': typeof AdminTimetableRoute
@@ -253,10 +267,12 @@ export interface FileRoutesByTo {
   '/admin/attendance': typeof AdminAttendanceRoute
   '/admin/audit': typeof AdminAuditRoute
   '/admin/departments': typeof AdminDepartmentsRoute
+  '/admin/examinations': typeof AdminExaminationsRoute
   '/admin/faculties': typeof AdminFacultiesRoute
   '/admin/lecturers': typeof AdminLecturersRoute
   '/admin/notifications': typeof AdminNotificationsRoute
   '/admin/reports': typeof AdminReportsRoute
+  '/admin/results': typeof AdminResultsRoute
   '/admin/settings': typeof AdminSettingsRoute
   '/admin/students': typeof AdminStudentsRoute
   '/admin/timetable': typeof AdminTimetableRoute
@@ -289,10 +305,12 @@ export interface FileRoutesById {
   '/admin/audit': typeof AdminAuditRoute
   '/admin/courses': typeof AdminCoursesRouteWithChildren
   '/admin/departments': typeof AdminDepartmentsRoute
+  '/admin/examinations': typeof AdminExaminationsRoute
   '/admin/faculties': typeof AdminFacultiesRoute
   '/admin/lecturers': typeof AdminLecturersRoute
   '/admin/notifications': typeof AdminNotificationsRoute
   '/admin/reports': typeof AdminReportsRoute
+  '/admin/results': typeof AdminResultsRoute
   '/admin/settings': typeof AdminSettingsRoute
   '/admin/students': typeof AdminStudentsRoute
   '/admin/timetable': typeof AdminTimetableRoute
@@ -326,10 +344,12 @@ export interface FileRouteTypes {
     | '/admin/audit'
     | '/admin/courses'
     | '/admin/departments'
+    | '/admin/examinations'
     | '/admin/faculties'
     | '/admin/lecturers'
     | '/admin/notifications'
     | '/admin/reports'
+    | '/admin/results'
     | '/admin/settings'
     | '/admin/students'
     | '/admin/timetable'
@@ -357,10 +377,12 @@ export interface FileRouteTypes {
     | '/admin/attendance'
     | '/admin/audit'
     | '/admin/departments'
+    | '/admin/examinations'
     | '/admin/faculties'
     | '/admin/lecturers'
     | '/admin/notifications'
     | '/admin/reports'
+    | '/admin/results'
     | '/admin/settings'
     | '/admin/students'
     | '/admin/timetable'
@@ -392,10 +414,12 @@ export interface FileRouteTypes {
     | '/admin/audit'
     | '/admin/courses'
     | '/admin/departments'
+    | '/admin/examinations'
     | '/admin/faculties'
     | '/admin/lecturers'
     | '/admin/notifications'
     | '/admin/reports'
+    | '/admin/results'
     | '/admin/settings'
     | '/admin/students'
     | '/admin/timetable'
@@ -547,6 +571,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminSettingsRouteImport
       parentRoute: typeof AdminRoute
     }
+    '/admin/results': {
+      id: '/admin/results'
+      path: '/results'
+      fullPath: '/admin/results'
+      preLoaderRoute: typeof AdminResultsRouteImport
+      parentRoute: typeof AdminRoute
+    }
     '/admin/reports': {
       id: '/admin/reports'
       path: '/reports'
@@ -573,6 +604,13 @@ declare module '@tanstack/react-router' {
       path: '/faculties'
       fullPath: '/admin/faculties'
       preLoaderRoute: typeof AdminFacultiesRouteImport
+      parentRoute: typeof AdminRoute
+    }
+    '/admin/examinations': {
+      id: '/admin/examinations'
+      path: '/examinations'
+      fullPath: '/admin/examinations'
+      preLoaderRoute: typeof AdminExaminationsRouteImport
       parentRoute: typeof AdminRoute
     }
     '/admin/departments': {
@@ -687,10 +725,12 @@ interface AdminRouteChildren {
   AdminAuditRoute: typeof AdminAuditRoute
   AdminCoursesRoute: typeof AdminCoursesRouteWithChildren
   AdminDepartmentsRoute: typeof AdminDepartmentsRoute
+  AdminExaminationsRoute: typeof AdminExaminationsRoute
   AdminFacultiesRoute: typeof AdminFacultiesRoute
   AdminLecturersRoute: typeof AdminLecturersRoute
   AdminNotificationsRoute: typeof AdminNotificationsRoute
   AdminReportsRoute: typeof AdminReportsRoute
+  AdminResultsRoute: typeof AdminResultsRoute
   AdminSettingsRoute: typeof AdminSettingsRoute
   AdminStudentsRoute: typeof AdminStudentsRoute
   AdminTimetableRoute: typeof AdminTimetableRoute
@@ -702,10 +742,12 @@ const AdminRouteChildren: AdminRouteChildren = {
   AdminAuditRoute: AdminAuditRoute,
   AdminCoursesRoute: AdminCoursesRouteWithChildren,
   AdminDepartmentsRoute: AdminDepartmentsRoute,
+  AdminExaminationsRoute: AdminExaminationsRoute,
   AdminFacultiesRoute: AdminFacultiesRoute,
   AdminLecturersRoute: AdminLecturersRoute,
   AdminNotificationsRoute: AdminNotificationsRoute,
   AdminReportsRoute: AdminReportsRoute,
+  AdminResultsRoute: AdminResultsRoute,
   AdminSettingsRoute: AdminSettingsRoute,
   AdminStudentsRoute: AdminStudentsRoute,
   AdminTimetableRoute: AdminTimetableRoute,

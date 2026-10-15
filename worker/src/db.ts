@@ -22,6 +22,14 @@ import {
   weightedPercentage,
   type StatusCounts,
 } from "./stats";
+import {
+  correlation,
+  gradeFor,
+  gradeForPercent,
+  percentOf,
+  roundTo,
+  weightedFinalPercent,
+} from "../../shared/grades";
 import { dayWindow, recentDayWindows } from "./time";
 import type {
   Absentee,
@@ -37,6 +45,12 @@ import type {
   CourseReportStudent,
   CourseReportTotals,
   CourseSessionStat,
+  Exam,
+  ExamKind,
+  ExamResult,
+  ReportSnapshot,
+  ResultAnalytics,
+  ResultAnalyticsRow,
   SessionRegisterPage,
   SessionRegisterRow,
   SessionRegisterTotals,
@@ -160,6 +174,7 @@ export function defaultSiteSettings(): SiteSettings {
     timezone: "Africa/Lagos",
     lateCountsAsAttended: true,
     excusedCountsAsAbsent: true,
+    barredFromExamBelowThreshold: false,
     currentAcademicSessionId: null,
     currentSemesterId: null,
     logoUrl: null,
@@ -408,6 +423,7 @@ export class Repo {
         r.late_counts_as_attended == null ? true : !!num(r.late_counts_as_attended),
       excusedCountsAsAbsent:
         r.excused_counts_as_absent == null ? true : !!num(r.excused_counts_as_absent),
+      barredFromExamBelowThreshold: !!num(r.barred_from_exam_below_threshold ?? 0),
       marqueeItems: safeJsonArray<string>(r.marquee_items, []),
       testimonials: safeJsonArray<Testimonial>(r.testimonials, []),
       demoAccountsEnabled: !!r.demo_accounts_enabled,
@@ -2365,6 +2381,563 @@ export class Repo {
   }
 
   /** Read the trail (newest first). Read-only by design. */
+  // ── Examinations & results (plan §4.4 / P4.3) ───────────────────────────
+  //
+  // Scores are stored with their `max_score`, never as a bare percentage: a
+  // lecturer re-weighting a CA from /20 to /100 must not silently rewrite a
+  // published grade. Everything here is scoped by the caller in the route layer
+  // (lecturer ⇒ own courses only), and every write that changes a published
+  // figure is accompanied by an audit row at the call site.
+
+  private rowToExam(r: Row): Exam {
+    return {
+      id: str(r.id),
+      courseId: str(r.course_id),
+      courseCode: optStr(r.course_code),
+      courseTitle: optStr(r.course_title),
+      departmentId: optStr(r.department_id),
+      departmentName: optStr(r.department_name),
+      semesterId: optStr(r.semester_id),
+      semesterName: optStr(r.semester_name),
+      title: str(r.title),
+      kind: (optStr(r.kind) ?? "exam") as ExamKind,
+      weight: optNum(r.weight),
+      maxScore: num(r.max_score),
+      scheduledAt: optNum(r.scheduled_at),
+      durationMinutes: optNum(r.duration_minutes),
+      venue: optStr(r.venue),
+      room: optStr(r.room),
+      published: !!num(r.published ?? 0),
+      createdBy: optStr(r.created_by),
+      createdAt: num(r.created_at),
+      marked: r.marked == null ? undefined : num(r.marked),
+      enrolled: r.enrolled == null ? undefined : num(r.enrolled),
+    };
+  }
+
+  async listExams(courseId?: string, semesterId?: string): Promise<Exam[]> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (courseId) {
+      where.push("e.course_id = ?");
+      params.push(courseId);
+    }
+    if (semesterId) {
+      where.push("(e.semester_id = ? OR e.semester_id IS NULL)");
+      params.push(semesterId);
+    }
+    const rows = await this.all<Row>(
+      `SELECT e.*, c.code AS course_code, c.title AS course_title, c.department_id,
+              d.name AS department_name, s.name AS semester_name,
+              (SELECT COUNT(*) FROM results r WHERE r.exam_id = e.id AND r.score IS NOT NULL) AS marked,
+              (SELECT COUNT(*) FROM course_enrollments ce WHERE ce.course_id = e.course_id) AS enrolled
+       FROM exams e
+       LEFT JOIN courses c     ON c.id = e.course_id
+       LEFT JOIN departments d ON d.id = c.department_id
+       LEFT JOIN semesters   s ON s.id = e.semester_id
+       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+       ORDER BY COALESCE(e.scheduled_at, e.created_at) DESC, e.title ASC`,
+      params,
+    );
+    return rows.map((r) => this.rowToExam(r));
+  }
+
+  async getExam(id: string): Promise<Exam | undefined> {
+    const r = await this.first<Row>(
+      `SELECT e.*, c.code AS course_code, c.title AS course_title, c.department_id,
+              d.name AS department_name, s.name AS semester_name
+       FROM exams e
+       LEFT JOIN courses c     ON c.id = e.course_id
+       LEFT JOIN departments d ON d.id = c.department_id
+       LEFT JOIN semesters   s ON s.id = e.semester_id
+       WHERE e.id = ?`,
+      [id],
+    );
+    return r ? this.rowToExam(r) : undefined;
+  }
+
+  async createExam(input: {
+    courseId: string;
+    title: string;
+    kind?: ExamKind;
+    weight?: number;
+    maxScore?: number;
+    scheduledAt?: number;
+    durationMinutes?: number;
+    venue?: string;
+    room?: string;
+    semesterId?: string;
+    createdBy?: string;
+  }): Promise<Exam> {
+    const course = await this.getCourse(input.courseId);
+    if (!course) throw new BusinessError("Course not found");
+    const semesterId =
+      input.semesterId ?? course.semesterId ?? (await this.academicPeriod()).semester?.id;
+    const exam: Exam = {
+      id: nanoid(10),
+      courseId: input.courseId,
+      semesterId,
+      title: input.title.trim(),
+      kind: input.kind ?? "exam",
+      weight: input.weight,
+      maxScore: input.maxScore ?? 100,
+      scheduledAt: input.scheduledAt,
+      durationMinutes: input.durationMinutes,
+      venue: input.venue,
+      room: input.room,
+      published: false,
+      createdBy: input.createdBy,
+      createdAt: Date.now(),
+    };
+    await this.run(
+      `INSERT INTO exams (id, course_id, semester_id, title, kind, weight, max_score,
+         scheduled_at, duration_minutes, venue, room, published, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+      [
+        exam.id,
+        exam.courseId,
+        exam.semesterId ?? null,
+        exam.title,
+        exam.kind,
+        exam.weight ?? null,
+        exam.maxScore,
+        exam.scheduledAt ?? null,
+        exam.durationMinutes ?? null,
+        exam.venue ?? null,
+        exam.room ?? null,
+        exam.createdBy ?? null,
+        exam.createdAt,
+      ],
+    );
+    return exam;
+  }
+
+  async updateExam(
+    id: string,
+    patch: {
+      title?: string;
+      kind?: ExamKind;
+      weight?: number | null;
+      maxScore?: number;
+      scheduledAt?: number | null;
+      durationMinutes?: number | null;
+      venue?: string | null;
+      room?: string | null;
+      published?: boolean;
+    },
+  ): Promise<Exam | undefined> {
+    const exam = await this.getExam(id);
+    if (!exam) return undefined;
+    const next = {
+      title: patch.title?.trim() ?? exam.title,
+      kind: patch.kind ?? exam.kind,
+      weight: patch.weight === undefined ? exam.weight : (patch.weight ?? undefined),
+      maxScore: patch.maxScore ?? exam.maxScore,
+      scheduledAt:
+        patch.scheduledAt === undefined ? exam.scheduledAt : (patch.scheduledAt ?? undefined),
+      durationMinutes:
+        patch.durationMinutes === undefined
+          ? exam.durationMinutes
+          : (patch.durationMinutes ?? undefined),
+      venue: patch.venue === undefined ? exam.venue : (patch.venue ?? undefined),
+      room: patch.room === undefined ? exam.room : (patch.room ?? undefined),
+      published: patch.published ?? exam.published,
+    };
+    await this.run(
+      `UPDATE exams SET title = ?, kind = ?, weight = ?, max_score = ?, scheduled_at = ?,
+         duration_minutes = ?, venue = ?, room = ?, published = ? WHERE id = ?`,
+      [
+        next.title,
+        next.kind,
+        next.weight ?? null,
+        next.maxScore,
+        next.scheduledAt ?? null,
+        next.durationMinutes ?? null,
+        next.venue ?? null,
+        next.room ?? null,
+        next.published ? 1 : 0,
+        id,
+      ],
+    );
+    return { ...exam, ...next };
+  }
+
+  /** Deletes an exam and its marks. Returns how many results went with it. */
+  async deleteExam(id: string): Promise<number> {
+    const count =
+      (await this.first<{ c: number }>("SELECT COUNT(*) AS c FROM results WHERE exam_id = ?", [id]))
+        ?.c ?? 0;
+    await this.run("DELETE FROM results WHERE exam_id = ?", [id]);
+    await this.run("DELETE FROM exams WHERE id = ?", [id]);
+    return count;
+  }
+
+  /** Marks for one exam, joined to the student's identity. */
+  async listResults(examId: string): Promise<ExamResult[]> {
+    const rows = await this.all<Row>(
+      `SELECT r.*, u.name AS student_name, u.matric_no
+       FROM results r
+       JOIN users u ON u.id = r.student_id
+       WHERE r.exam_id = ?
+       ORDER BY u.name ASC`,
+      [examId],
+    );
+    return rows.map((r) => this.rowToResult(r));
+  }
+
+  /** Every mark a student has in one course (used by the student's own page). */
+  async listStudentResults(studentId: string, courseId?: string): Promise<ExamResult[]> {
+    const where = ["r.student_id = ?"];
+    const params: unknown[] = [studentId];
+    if (courseId) {
+      where.push("r.course_id = ?");
+      params.push(courseId);
+    }
+    const rows = await this.all<Row>(
+      `SELECT r.* FROM results r WHERE ${where.join(" AND ")} ORDER BY r.updated_at DESC`,
+      params,
+    );
+    return rows.map((r) => this.rowToResult(r));
+  }
+
+  private rowToResult(r: Row): ExamResult {
+    return {
+      id: str(r.id),
+      examId: str(r.exam_id),
+      courseId: str(r.course_id),
+      studentId: str(r.student_id),
+      studentName: optStr(r.student_name),
+      matricNo: optStr(r.matric_no),
+      score: r.score == null ? null : num(r.score),
+      grade: optStr(r.grade),
+      enteredBy: optStr(r.entered_by),
+      updatedAt: num(r.updated_at),
+    };
+  }
+
+  /**
+   * Upsert marks for one exam: one row per (exam, student).
+   *
+   * `score: null` clears a mark rather than writing a zero — the two are
+   * different facts ("not marked yet" versus "scored nothing"), and the
+   * analytics must not average an unmarked script as a fail. Re-running the same
+   * batch is therefore safe, which is what makes an import resumable.
+   */
+  async saveResults(
+    examId: string,
+    rows: Array<{ studentId: string; score: number | null; grade?: string | null }>,
+    enteredBy?: string,
+  ): Promise<{ saved: number; cleared: number }> {
+    const exam = await this.getExam(examId);
+    if (!exam) throw new BusinessError("Exam not found");
+    const now = Date.now();
+    let saved = 0;
+    let cleared = 0;
+    for (const row of rows) {
+      if (row.score == null) {
+        await this.run("DELETE FROM results WHERE exam_id = ? AND student_id = ?", [
+          examId,
+          row.studentId,
+        ]);
+        cleared++;
+        continue;
+      }
+      const grade = row.grade ?? gradeFor(row.score, exam.maxScore);
+      await this.run(
+        `INSERT INTO results (id, exam_id, course_id, semester_id, student_id, score, grade, entered_by, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(exam_id, student_id) DO UPDATE SET
+           score = excluded.score, grade = excluded.grade,
+           entered_by = excluded.entered_by, updated_at = excluded.updated_at`,
+        [
+          nanoid(10),
+          examId,
+          exam.courseId,
+          exam.semesterId ?? null,
+          row.studentId,
+          row.score,
+          grade,
+          enteredBy ?? null,
+          now,
+        ],
+      );
+      saved++;
+    }
+    return { saved, cleared };
+  }
+
+  /** Delete one mark. Returns the student id so the caller can notify them. */
+  async deleteResult(
+    examId: string,
+    studentId: string,
+  ): Promise<{ studentId: string; courseId: string } | undefined> {
+    const row = await this.first<Row>(
+      "SELECT student_id, course_id FROM results WHERE exam_id = ? AND student_id = ?",
+      [examId, studentId],
+    );
+    if (!row) return undefined;
+    await this.run("DELETE FROM results WHERE exam_id = ? AND student_id = ?", [examId, studentId]);
+    return { studentId: str(row.student_id), courseId: str(row.course_id) };
+  }
+
+  /**
+   * Attendance × performance for one course (plan P4.4).
+   *
+   * The attendance half is the *same* opportunity-weighted figure the course
+   * page and the All-Courses table show — it comes from `courseReport`, not from
+   * a second implementation — and the performance half is the weighted mean of
+   * each student's per-exam percentage. Students with no marks are reported as
+   * `finalPercent: null` rather than 0, so they neither inflate nor deflate the
+   * cohort means.
+   */
+  async resultAnalytics(
+    courseId: string,
+    filters: ReportFilters = {},
+  ): Promise<ResultAnalytics | undefined> {
+    const report = await this.courseReport(courseId, filters);
+    if (!report) return undefined;
+    const settings = await this.getSiteSettings();
+    const exams = await this.listExams(courseId, filters.semesterId);
+    const threshold = settings.atRiskThreshold;
+    const policyEnabled = settings.barredFromExamBelowThreshold;
+
+    const marksByExam = new Map<string, Map<string, number | null>>();
+    for (const exam of exams) {
+      const marks = new Map<string, number | null>();
+      for (const r of await this.listResults(exam.id)) marks.set(r.studentId, r.score);
+      marksByExam.set(exam.id, marks);
+    }
+
+    const rows: ResultAnalyticsRow[] = report.students.map((student) => {
+      const scores: Record<string, number | null> = {};
+      const contributions: Array<{ percent: number | null; weight?: number }> = [];
+      for (const exam of exams) {
+        const raw = marksByExam.get(exam.id)?.get(student.id) ?? null;
+        scores[exam.id] = raw;
+        contributions.push({ percent: percentOf(raw, exam.maxScore), weight: exam.weight });
+      }
+      // Shared with the client and the exports: one grading rule everywhere.
+      const finalPercent = weightedFinalPercent(contributions);
+      return {
+        studentId: student.id,
+        studentName: student.name,
+        matricNo: student.matricNo,
+        attendanceRate: student.percentage,
+        attended: student.attended,
+        expected: student.expected,
+        finalPercent,
+        letterGrade: finalPercent == null ? undefined : gradeForPercent(finalPercent),
+        barred: policyEnabled && student.percentage != null && student.percentage < threshold,
+        scores,
+      };
+    });
+
+    // Pearson correlation over the students who have both figures — the honest
+    // way to say "attendance tracks performance" rather than eyeballing the plot.
+    const correlationValue = correlation(
+      rows
+        .filter((r) => r.attendanceRate != null && r.finalPercent != null)
+        .map((r) => [r.attendanceRate as number, r.finalPercent as number] as const),
+    );
+    const scored = rows.filter((r) => r.finalPercent != null);
+    const above = scored.filter((r) => !r.barred).map((r) => r.finalPercent as number);
+    const below = scored.filter((r) => r.barred).map((r) => r.finalPercent as number);
+    const mean = (list: number[]): number | null =>
+      list.length === 0 ? null : roundTo(list.reduce((a, b) => a + b, 0) / list.length, 1);
+
+    return {
+      course: {
+        id: report.course.id,
+        code: report.course.code,
+        title: report.course.title,
+        departmentName: report.course.departmentName,
+      },
+      threshold,
+      policyEnabled,
+      exams: exams.map((e) => ({
+        id: e.id,
+        title: e.title,
+        kind: e.kind,
+        maxScore: e.maxScore,
+        weight: e.weight,
+      })),
+      rows,
+      summary: {
+        students: rows.length,
+        barred: rows.filter((r) => r.barred).length,
+        correlation: correlationValue,
+        meanAbove: mean(above),
+        meanBelow: mean(below),
+        barredButPassing: rows.filter((r) => r.barred && (r.finalPercent ?? 0) >= 50).length,
+      },
+      meta: { generatedAt: Date.now(), threshold, filters },
+    };
+  }
+
+  // ── Published period snapshots (plan §4.3 / P5.3) ────────────────────────
+  //
+  // Finalising a semester freezes its attendance records, but a *report* is more
+  // than records: it is the arithmetic, the threshold in force, and the roster as
+  // it stood. Storing the rendered payload means re-printing last year's
+  // semester report cannot quietly produce different numbers after a correction
+  // or a change to the at-risk threshold.
+
+  private rowToSnapshot(r: Row): ReportSnapshot {
+    let payload: unknown = null;
+    try {
+      payload = r.payload_json ? JSON.parse(str(r.payload_json)) : null;
+    } catch {
+      payload = null;
+    }
+    let totals: Record<string, number | null> | undefined;
+    try {
+      totals = r.totals_json
+        ? (JSON.parse(str(r.totals_json)) as Record<string, number | null>)
+        : undefined;
+    } catch {
+      totals = undefined;
+    }
+    return {
+      id: str(r.id),
+      scope: str(r.scope),
+      entityId: optStr(r.entity_id),
+      label: str(r.label),
+      payload,
+      totals,
+      rowCount: num(r.row_count),
+      createdBy: optStr(r.created_by),
+      createdAt: num(r.created_at),
+    };
+  }
+
+  /** Store the exact payload that is being published, with its signature totals. */
+  async createSnapshot(input: {
+    scope: string;
+    entityId?: string;
+    label: string;
+    payload: unknown;
+    totals?: Record<string, number | null>;
+    rowCount?: number;
+    createdBy?: string;
+  }): Promise<ReportSnapshot> {
+    const snapshot: ReportSnapshot = {
+      id: nanoid(12),
+      scope: input.scope,
+      entityId: input.entityId,
+      label: input.label,
+      payload: input.payload,
+      totals: input.totals,
+      rowCount: input.rowCount ?? 0,
+      createdBy: input.createdBy,
+      createdAt: Date.now(),
+    };
+    await this.run(
+      `INSERT INTO report_snapshots (id, scope, entity_id, label, payload_json, totals_json,
+         row_count, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        snapshot.id,
+        snapshot.scope,
+        snapshot.entityId ?? null,
+        snapshot.label,
+        JSON.stringify(snapshot.payload ?? null),
+        snapshot.totals ? JSON.stringify(snapshot.totals) : null,
+        snapshot.rowCount,
+        snapshot.createdBy ?? null,
+        snapshot.createdAt,
+      ],
+    );
+    return snapshot;
+  }
+
+  async listSnapshots(scope?: string, entityId?: string): Promise<ReportSnapshot[]> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (scope) {
+      where.push("scope = ?");
+      params.push(scope);
+    }
+    if (entityId) {
+      where.push("entity_id = ?");
+      params.push(entityId);
+    }
+    const rows = await this.all<Row>(
+      `SELECT * FROM report_snapshots ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+       ORDER BY created_at DESC LIMIT 100`,
+      params,
+    );
+    return rows.map((r) => this.rowToSnapshot(r));
+  }
+
+  async getSnapshot(id: string): Promise<ReportSnapshot | undefined> {
+    const r = await this.first<Row>("SELECT * FROM report_snapshots WHERE id = ?", [id]);
+    return r ? this.rowToSnapshot(r) : undefined;
+  }
+
+  /**
+   * Publish a semester: freeze attendance (as `finalizeSemester` already does)
+   * *and* store the report payload alongside it, so the figures that were
+   * announced are the figures that can be reproduced.
+   */
+  async finalizeSemesterWithSnapshot(
+    id: string,
+    createdBy?: string,
+  ): Promise<{ semester: Semester; snapshot: ReportSnapshot }> {
+    const semester = await this.finalizeSemester(id);
+    const report = await this.coursesReport({ semesterId: id, pageSize: 500 });
+    const payload = await this.courseReportForSemester(id);
+    const snapshot = await this.createSnapshot({
+      scope: "semester",
+      entityId: id,
+      label: `${report.meta.period.academicSession?.name ?? ""} · ${semester.name}`.trim(),
+      payload,
+      totals: {
+        courses: report.totals.courses,
+        enrolled: report.totals.enrolled,
+        classesHeld: report.totals.classesHeld,
+        present: report.totals.present,
+        absent: report.totals.absent,
+        late: report.totals.late,
+        excused: report.totals.excused,
+        rate: report.totals.rate,
+      },
+      rowCount: report.rows.length,
+      createdBy,
+    });
+    return { semester, snapshot };
+  }
+
+  /**
+   * The per-course table behind a semester snapshot. Kept as a plain structure
+   * (not a live query) because it is serialised verbatim into `report_snapshots`.
+   */
+  async courseReportForSemester(semesterId: string): Promise<Record<string, unknown>> {
+    const report = await this.coursesReport({ semesterId, pageSize: 500 });
+    return {
+      semesterId,
+      generatedAt: report.meta.generatedAt,
+      period: report.meta.period,
+      threshold: report.meta.threshold,
+      totals: report.totals,
+      rows: report.rows.map((r) => ({
+        code: r.code,
+        title: r.title,
+        department: r.departmentCode ?? r.departmentName ?? null,
+        lecturer: r.lecturerName ?? null,
+        enrolled: r.enrolled,
+        classesHeld: r.classesHeld,
+        classesAttended: r.classesAttended,
+        present: r.present,
+        absent: r.absent,
+        late: r.late,
+        excused: r.excused,
+        attended: r.attended,
+        expected: r.expected,
+        rate: r.rate,
+      })),
+    };
+  }
+
   // ── Notifications (plan §4.5 / P4.5) ─────────────────────────────────────
   //
   // One row per recipient. Recipient lists are always resolved from the
@@ -3553,16 +4126,17 @@ export class Repo {
     };
     await this.run(
       `INSERT INTO site_settings (id, institution_name, at_risk_threshold, timezone, late_counts_as_attended,
-        excused_counts_as_absent, marquee_items, testimonials,
+        excused_counts_as_absent, barred_from_exam_below_threshold, marquee_items, testimonials,
         demo_accounts_enabled, demo_password, demo_email_domain, show_fake_stats, primary_color, contact_email,
         current_academic_session_id, current_semester_id, logo_url, report_footer_note)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
         institution_name = excluded.institution_name,
         at_risk_threshold = excluded.at_risk_threshold,
         timezone = excluded.timezone,
         late_counts_as_attended = excluded.late_counts_as_attended,
         excused_counts_as_absent = excluded.excused_counts_as_absent,
+        barred_from_exam_below_threshold = excluded.barred_from_exam_below_threshold,
         marquee_items = excluded.marquee_items,
         testimonials = excluded.testimonials,
         demo_accounts_enabled = excluded.demo_accounts_enabled,
@@ -3582,6 +4156,7 @@ export class Repo {
         next.timezone,
         next.lateCountsAsAttended ? 1 : 0,
         next.excusedCountsAsAbsent ? 1 : 0,
+        next.barredFromExamBelowThreshold ? 1 : 0,
         JSON.stringify(next.marqueeItems),
         JSON.stringify(next.testimonials),
         next.demoAccountsEnabled ? 1 : 0,

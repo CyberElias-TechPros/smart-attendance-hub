@@ -11,6 +11,7 @@ import { redirect } from "@tanstack/react-router";
 import {
   academics,
   audit,
+  exams,
   auth,
   courses,
   departments,
@@ -144,6 +145,28 @@ export const auditQO = (query: Record<string, string | number | undefined> = {})
   });
 
 // ─── Notifications (plan §4.5 / P4.5) ───────────────────────────────────────
+
+export const examsQO = (query: { courseId?: string; semesterId?: string } = {}) =>
+  queryOptions({
+    queryKey: ["exams", query],
+    queryFn: () => exams.list(query),
+    placeholderData: keepPreviousData,
+  });
+
+export const examDetailQO = (id: string) =>
+  queryOptions({
+    queryKey: ["exams", id],
+    queryFn: () => exams.get(id),
+    enabled: Boolean(id),
+  });
+
+export const resultAnalyticsQO = (courseId: string, filters: ReportFilters = {}) =>
+  queryOptions({
+    queryKey: ["reports", "analytics", courseId, filters],
+    queryFn: () => exams.analytics(courseId, filters),
+    enabled: Boolean(courseId),
+    placeholderData: keepPreviousData,
+  });
 
 export const schedulesQO = queryOptions({
   queryKey: ["schedules"],
