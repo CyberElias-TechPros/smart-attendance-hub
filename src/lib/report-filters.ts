@@ -43,6 +43,7 @@ export function normaliseFilters(search: Record<string, unknown>): ReportFilters
     facultyId: str(search.facultyId),
     departmentId: str(search.departmentId),
     courseId: str(search.courseId),
+    courseIds: str(search.courseIds),
     lecturerId: str(search.lecturerId),
     category: str(search.category),
     status: status && STATUSES.includes(status) ? status : undefined,

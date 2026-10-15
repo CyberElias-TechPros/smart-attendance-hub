@@ -2767,6 +2767,15 @@ export class Repo {
       where.push("c.id = ?");
       params.push(filters.courseId);
     }
+    const selectedIds = (filters.courseIds ?? "")
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean)
+      .slice(0, 500);
+    if (selectedIds.length > 0) {
+      where.push(`c.id IN (${selectedIds.map(() => "?").join(",")})`);
+      params.push(...selectedIds);
+    }
     if (filters.departmentId) {
       where.push("c.department_id = ?");
       params.push(filters.departmentId);
@@ -2994,6 +3003,9 @@ export class Repo {
       acc.courses += 1;
       acc.enrolled += r.enrolled;
       acc.classesHeld += r.classesHeld;
+      // Summed here, then replaced below by the opportunity-weighted mean of
+      // the same column: adding up per-course averages would let a 4-student
+      // elective weigh as much as a 428-student core course (brief §8).
       acc.classesAttended = Math.round((acc.classesAttended + r.classesAttended) * 10) / 10;
       acc.present += r.present;
       acc.absent += r.absent;
@@ -3007,6 +3019,9 @@ export class Repo {
       rows.map((r) => ({ attended: r.attended, expected: r.expected })),
       1,
     );
+    if (totals.expected > 0 && totals.enrolled > 0) {
+      totals.classesAttended = Math.round((totals.attended / totals.enrolled) * 10) / 10;
+    }
 
     // ── 6. Pagination (the totals describe the *filtered* set, not the page) ──
     const total = rows.length;

@@ -72,7 +72,7 @@ const COLUMNS: Array<{
     label: "Classes Attended",
     align: "right",
     sortable: true,
-    hint: "Average lectures attended per student — the attendance rate applied to the lectures held.",
+    hint: "Average lectures attended per student. The totals row below is the weighted mean of this column (attended ÷ enrolled), not the sum of the per-course numbers.",
   },
   { key: "rate", label: "Attendance", align: "right", sortable: true },
   {
@@ -94,7 +94,11 @@ function AllCoursesPage() {
   const { data: settings } = useSiteSettings();
   const [exporting, setExporting] = useState<null | "excel" | "pdf">(null);
 
-  const reportQ = useQuery(coursesReportQO(filters));
+  // The table itself ignores the selection so you can keep picking rows across
+  // pages; the selection still narrows every export and the print preview,
+  // because those read `filters` (selection included).
+  const tableFilters = useMemo(() => cleanFilters({ ...filters, courseIds: undefined }), [filters]);
+  const reportQ = useQuery(coursesReportQO(tableFilters));
   const facultiesQ = useQuery(facultiesQO);
   const deptsQ = useQuery(deptsQO);
   const lecturersQ = useQuery(usersQO("lecturer"));
@@ -104,6 +108,34 @@ function AllCoursesPage() {
     void navigate({ to: "/admin/courses", search: cleanFilters({ ...filters, ...next }) });
 
   const reset = () => void navigate({ to: "/admin/courses", search: {} });
+
+  // ── Multi-course selection (brief §7: export one course, several, or all) ──
+  // The selection lives in the URL as `courseIds`, so it is shared by the
+  // table, the print preview and both exporters without any extra plumbing:
+  // every one of them already reads the same `filters` object.
+  const selected = useMemo(
+    () => new Set((filters.courseIds ?? "").split(",").filter(Boolean)),
+    [filters.courseIds],
+  );
+  const toggleSelected = (id: string) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    patch({ courseIds: next.size > 0 ? [...next].join(",") : undefined });
+  };
+  const selectAllOnPage = () => {
+    const rows = report?.rows ?? [];
+    if (rows.length === 0) return;
+    const next = new Set(selected);
+    const allSelected = rows.every((r) => next.has(r.id));
+    for (const r of rows) {
+      if (allSelected) next.delete(r.id);
+      else next.add(r.id);
+    }
+    patch({ courseIds: next.size > 0 ? [...next].join(",") : undefined });
+  };
+  const clearSelection = () => patch({ courseIds: undefined });
+
   const toggleSort = (key: ReportSortKey) =>
     patch({
       sort: key,
@@ -226,6 +258,35 @@ function AllCoursesPage() {
         />
       </div>
 
+      {selected.size > 0 && (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-primary/40 bg-primary/5 px-4 py-3">
+          <div className="text-sm">
+            <span className="font-semibold">{selected.size}</span>{" "}
+            {selected.size === 1 ? "course" : "courses"} selected
+            <span className="text-muted-foreground">
+              {" "}
+              · Excel, PDF and the print preview now cover exactly these courses.
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => void doExport("excel")} disabled={exporting !== null}>
+              <FileSpreadsheet className="mr-1.5 h-3.5 w-3.5" /> Excel (selected)
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void doExport("pdf")}
+              disabled={exporting !== null}
+            >
+              <FileText className="mr-1.5 h-3.5 w-3.5" /> Print / PDF (selected)
+            </Button>
+            <Button size="sm" variant="ghost" onClick={clearSelection}>
+              Clear selection
+            </Button>
+          </div>
+        </div>
+      )}
+
       <div className="mt-4 overflow-hidden rounded-2xl border border-border/70 bg-card shadow-elegant">
         {reportQ.isError && (
           <div className="p-8 text-center text-sm text-destructive">
@@ -265,6 +326,18 @@ function AllCoursesPage() {
               </caption>
               <TableHeader className="sticky top-0 z-10 bg-card">
                 <TableRow>
+                  <TableHead className="w-8">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 cursor-pointer accent-primary align-middle"
+                      aria-label="Select every course on this page"
+                      checked={
+                        (report?.rows.length ?? 0) > 0 &&
+                        report!.rows.every((r) => selected.has(r.id))
+                      }
+                      onChange={selectAllOnPage}
+                    />
+                  </TableHead>
                   {COLUMNS.map((col) => (
                     <TableHead
                       key={col.key}
@@ -306,7 +379,19 @@ function AllCoursesPage() {
               </TableHeader>
               <TableBody>
                 {report.rows.map((row, index) => (
-                  <TableRow key={row.id} className="hover:bg-muted/40">
+                  <TableRow
+                    key={row.id}
+                    className={cn("hover:bg-muted/40", selected.has(row.id) && "bg-primary/5")}
+                  >
+                    <TableCell className="w-8">
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5 cursor-pointer accent-primary align-middle"
+                        aria-label={`Select ${row.code}`}
+                        checked={selected.has(row.id)}
+                        onChange={() => toggleSelected(row.id)}
+                      />
+                    </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {(page - 1) * pageSize + index + 1}
                     </TableCell>
@@ -363,12 +448,16 @@ function AllCoursesPage() {
               <tfoot>
                 <TableRow className="border-t-2 border-border bg-muted/30 font-semibold">
                   <TableCell />
-                  <TableCell colSpan={3} className="text-xs uppercase tracking-widest">
+                  <TableCell />
+                  <TableCell colSpan={4} className="text-xs uppercase tracking-widest">
                     Totals ({totals?.courses ?? 0} courses)
                   </TableCell>
                   <TableCell className="text-right font-mono">{totals?.enrolled ?? 0}</TableCell>
                   <TableCell className="text-right font-mono">{totals?.classesHeld ?? 0}</TableCell>
-                  <TableCell className="text-right font-mono">
+                  <TableCell
+                    className="text-right font-mono"
+                    title="Opportunity-weighted mean lectures attended per student across the filtered courses."
+                  >
                     {totals?.classesAttended ?? 0}
                   </TableCell>
                   <TableCell className="text-right">

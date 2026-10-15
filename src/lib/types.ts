@@ -367,6 +367,8 @@ export interface ReportFilters {
   facultyId?: string;
   departmentId?: string;
   courseId?: string;
+  /** Comma-separated course ids — the "export the courses I selected" filter. */
+  courseIds?: string;
   lecturerId?: string;
   from?: number;
   to?: number;

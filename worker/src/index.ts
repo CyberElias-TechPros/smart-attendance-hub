@@ -316,6 +316,12 @@ const reportFilterSchema = z.object({
   facultyId: z.string().trim().max(60).optional(),
   departmentId: z.string().trim().max(60).optional(),
   courseId: z.string().trim().max(60).optional(),
+  /**
+   * Several courses at once ("export the courses I selected"). Comma-separated
+   * so it fits a query string, which is what makes a selection shareable and
+   * makes the screen, the print view and the export agree on the same set.
+   */
+  courseIds: z.string().trim().max(4000).optional(),
   lecturerId: z.string().trim().max(60).optional(),
   from: z.coerce.number().int().optional(),
   to: z.coerce.number().int().optional(),
