@@ -10,18 +10,39 @@
 // Authorization header — works same-origin and cross-origin alike.
 
 import type {
+  AcademicPeriod,
+  AcademicSession,
   AdminOverview,
   AttendanceSession,
   AttendanceStatus,
+  AuditEntry,
   Course,
   CourseReport,
+  CourseSessionStat,
+  CoursesReport,
   Department,
+  Faculty,
+  Exam,
+  ExamKind,
+  ExamResult,
+  AccessOverview,
+  ImportApplyResult,
+  ImportInput,
+  ImportKind,
+  ImportPreview,
+  MyAccess,
   FacultyReport,
+  NotificationsPage,
+  ResultAnalytics,
   OpenSession,
+  Paginated,
   PublicSettings,
+  ReportFilters,
   Role,
   Schedule,
+  Semester,
   SessionDetail,
+  SessionRegisterPage,
   SiteSettings,
   StudentCourseSession,
   StudentCourseView,
@@ -151,6 +172,18 @@ const qs = (params: Record<string, string | undefined>) => {
   >;
   return entries.length ? `?${new URLSearchParams(entries).toString()}` : "";
 };
+
+/** Serialise the brief's attendance filters (§6) for any report endpoint.
+ *  Booleans/numbers are stringified so the same object can drive a link the
+ *  administrator copies, an export, and a print view. */
+export function reportQuery(filters: ReportFilters = {}): string {
+  const params: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(filters)) {
+    if (value === undefined || value === null || value === "") continue;
+    params[key] = String(value);
+  }
+  return qs(params);
+}
 
 // ─── Auth ──────────────────────────────────────────────────────────────────
 
@@ -325,14 +358,21 @@ export const sessions = {
     request<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/end`, {
       method: "POST",
     }),
-  removeAttendance: (recordId: string) =>
-    request<{ ok: boolean }>(`/api/attendance/${encodeURIComponent(recordId)}`, {
+  /**
+   * Deleting a sign-in requires a reason: every correction is written to the
+   * audit trail (brief §9). `override` is the admin-only escape hatch for a
+   * finalised period.
+   */
+  removeAttendance: (recordId: string, input: { reason: string; override?: boolean }) =>
+    request<{ ok: boolean; removed: number }>(`/api/attendance/${encodeURIComponent(recordId)}`, {
       method: "DELETE",
+      body: input,
     }),
-  setAttendanceStatus: (recordId: string, status: AttendanceStatus) =>
-    request<{ ok: boolean }>(`/api/attendance/${encodeURIComponent(recordId)}/status`, {
+  /** Changing a status also requires a reason (same trail). */
+  setAttendanceStatus: (recordId: string, status: AttendanceStatus, input: { reason: string }) =>
+    request<{ record: unknown }>(`/api/attendance/${encodeURIComponent(recordId)}/status`, {
       method: "PATCH",
-      body: { status },
+      body: { status, ...input },
     }),
 };
 
@@ -393,12 +433,254 @@ export const student = {
 
 // ─── Reports ───────────────────────────────────────────────────────────────
 
+export const faculties = {
+  list: () => request<Faculty[]>(`/api/faculties`),
+  create: (input: {
+    name: string;
+    code: string;
+    deanUserId?: string;
+    icon?: string;
+    color?: string;
+  }) => request<Faculty>(`/api/faculties`, { method: "POST", body: input }),
+  update: (
+    id: string,
+    input: { name?: string; code?: string; deanUserId?: string; icon?: string; color?: string },
+  ) =>
+    request<Faculty>(`/api/faculties/${encodeURIComponent(id)}`, { method: "PATCH", body: input }),
+  remove: (id: string) =>
+    request<{ ok: boolean }>(`/api/faculties/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  setDepartment: (departmentId: string, facultyId: string | null) =>
+    request<{ ok: boolean }>(`/api/departments/${encodeURIComponent(departmentId)}/faculty`, {
+      method: "PATCH",
+      body: { facultyId },
+    }),
+};
+
+export const academics = {
+  period: () => request<AcademicPeriod>(`/api/academics/period`),
+  createSession: (input: {
+    name: string;
+    code: string;
+    startsOn?: number;
+    endsOn?: number;
+    makeCurrent?: boolean;
+  }) => request<AcademicSession>(`/api/academic-sessions`, { method: "POST", body: input }),
+  createSemester: (input: {
+    academicSessionId: string;
+    name: string;
+    sequence?: number;
+    startsOn?: number;
+    endsOn?: number;
+    makeCurrent?: boolean;
+  }) => request<Semester>(`/api/semesters`, { method: "POST", body: input }),
+  updateSemester: (
+    id: string,
+    input: { name?: string; startsOn?: number | null; endsOn?: number | null },
+  ) =>
+    request<Semester>(`/api/semesters/${encodeURIComponent(id)}`, { method: "PATCH", body: input }),
+  setCurrentSemester: (id: string) =>
+    request<AcademicPeriod>(`/api/semesters/${encodeURIComponent(id)}/current`, { method: "POST" }),
+  finalizeSemester: (id: string) =>
+    request<Semester>(`/api/semesters/${encodeURIComponent(id)}/finalize`, { method: "POST" }),
+};
+
+export const audit = {
+  list: (
+    query: {
+      action?: string;
+      actorId?: string;
+      entityType?: string;
+      entityId?: string;
+      courseId?: string;
+      from?: number;
+      to?: number;
+      page?: number;
+      pageSize?: number;
+    } = {},
+  ) => request<Paginated<AuditEntry>>(`/api/audit${reportQuery(query as ReportFilters)}`),
+};
+
+// ─── Notifications (plan §4.5 / P4.5) ──────────────────────────────────────
+
+export const notifications = {
+  list: (opts: { page?: number; pageSize?: number; unreadOnly?: boolean } = {}) =>
+    request<NotificationsPage>(
+      `/api/notifications${reportQuery({
+        page: opts.page,
+        pageSize: opts.pageSize,
+        unreadOnly: opts.unreadOnly ? "1" : undefined,
+      } as unknown as ReportFilters)}`,
+    ),
+  /** Tiny endpoint the bell polls. */
+  summary: () => request<{ unread: number }>(`/api/notifications/summary`),
+  markRead: (id: string) =>
+    request<{ ok: boolean }>(`/api/notifications/${encodeURIComponent(id)}/read`, {
+      method: "POST",
+    }),
+  markAllRead: () => request<{ marked: number }>(`/api/notifications/read-all`, { method: "POST" }),
+};
+
+// ─── Examinations & results (plan §4.4 / P4.3) ──────────────────────────────
+
+export const exams = {
+  list: (query: { courseId?: string; semesterId?: string } = {}) =>
+    request<Exam[]>(`/api/exams${reportQuery(query as ReportFilters)}`),
+  get: (id: string) =>
+    request<{ exam: Exam; results: ExamResult[] }>(`/api/exams/${encodeURIComponent(id)}`),
+  create: (input: {
+    courseId: string;
+    title: string;
+    kind?: ExamKind;
+    weight?: number | null;
+    maxScore?: number;
+    scheduledAt?: number | null;
+    durationMinutes?: number | null;
+    venue?: string;
+    room?: string;
+    semesterId?: string;
+  }) => request<Exam>(`/api/exams`, { method: "POST", body: input }),
+  update: (
+    id: string,
+    input: {
+      title?: string;
+      kind?: ExamKind;
+      weight?: number | null;
+      maxScore?: number;
+      scheduledAt?: number | null;
+      durationMinutes?: number | null;
+      venue?: string;
+      room?: string;
+      published?: boolean;
+    },
+  ) => request<Exam>(`/api/exams/${encodeURIComponent(id)}`, { method: "PATCH", body: input }),
+  remove: (id: string) =>
+    request<{ ok: boolean; removed: number }>(`/api/exams/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  /** Marks for one exam — a `score: null` row clears that student's mark. */
+  saveResults: (
+    id: string,
+    rows: Array<{ studentId: string; score: number | null; grade?: string }>,
+  ) =>
+    request<{ ok: boolean; saved: number; cleared: number }>(
+      `/api/exams/${encodeURIComponent(id)}/results`,
+      { method: "POST", body: { rows } },
+    ),
+  deleteResult: (examId: string, studentId: string) =>
+    request<{ ok: boolean }>(
+      `/api/exams/${encodeURIComponent(examId)}/results/${encodeURIComponent(studentId)}`,
+      { method: "DELETE" },
+    ),
+  /** Attendance × performance for a course (plan P4.4). */
+  analytics: (courseId: string, filters: ReportFilters = {}) =>
+    request<ResultAnalytics>(
+      `/api/reports/courses/${encodeURIComponent(courseId)}/analytics${reportQuery(filters)}`,
+    ),
+};
+
 export const reports = {
-  course: (courseId: string) =>
-    request<CourseReport>(`/api/reports/course/${encodeURIComponent(courseId)}`),
+  /** The brief's §4 table: every course with its attendance columns. */
+  courses: (filters: ReportFilters = {}) =>
+    request<CoursesReport>(`/api/reports/courses${reportQuery(filters)}`),
+  /** Institution-wide lecture register (P4.2). */
+  sessions: (filters: ReportFilters = {}) =>
+    request<SessionRegisterPage>(`/api/reports/sessions${reportQuery(filters)}`),
+  /** Per-lecture rows for one course (brief §5). */
+  courseSessions: (courseId: string, filters: ReportFilters = {}) =>
+    request<CourseSessionStat[]>(
+      `/api/reports/courses/${encodeURIComponent(courseId)}/sessions${reportQuery(filters)}`,
+    ),
+  /** One student's lecture-by-lecture history within a course (brief §5). */
+  courseStudentHistory: (courseId: string, studentId: string) =>
+    request<{
+      rows: StudentCourseSession[];
+      summary: { present: number; late: number; excused: number; absent: number; total: number };
+    }>(
+      `/api/reports/courses/${encodeURIComponent(courseId)}/students/${encodeURIComponent(studentId)}`,
+    ),
+  /** Record an export so the trail shows who took data out (brief §9). */
+  logExport: (input: {
+    format: "pdf" | "xlsx" | "csv" | "print";
+    scope: "course" | "courses" | "all" | "semester" | "session" | "date-range";
+    courseId?: string;
+    title?: string;
+    rowCount?: number;
+    filters?: Record<string, string | number | boolean>;
+  }) => request<{ ok: boolean }>(`/api/reports/exports`, { method: "POST", body: input }),
+  /** One course's full attendance report, scoped to the same filters the
+   *  All-Courses table uses (so the two can never disagree). */
+  course: (courseId: string, filters: ReportFilters = {}) =>
+    request<CourseReport>(
+      `/api/reports/course/${encodeURIComponent(courseId)}${reportQuery(filters)}`,
+    ),
   faculty: () => request<FacultyReport>("/api/reports/faculty"),
   adminOverview: () => request<AdminOverview>("/api/admin/overview"),
 };
+
+// ─── Bulk import (plan P5.4 / decision D8) ───────────────────────────────────
+
+/**
+ * CSV imports run in two steps on purpose: `preview` validates the whole file
+ * against the live database and reports every row with its file line number, and
+ * `apply` re-validates before writing anything. An error row stops the file.
+ */
+export const imports = {
+  preview: (input: ImportInput) =>
+    request<ImportPreview>("/api/import/preview", { method: "POST", body: input }),
+  apply: (input: ImportInput) =>
+    request<ImportApplyResult>("/api/import/apply", { method: "POST", body: input }),
+};
+
+// ─── Capabilities & administrators (plan §9 / P5.2) ─────────────────────────
+
+/**
+ * Reading and changing who may do what. A grant is additive — it widens a
+ * lecturer's *reading* scope — and every change is written to the audit trail
+ * server-side, so nothing here is silent.
+ */
+export const access = {
+  list: () => request<AccessOverview>("/api/access"),
+  me: () => request<MyAccess>("/api/access/me"),
+  grant: (userId: string, permission: string) =>
+    request<{ ok: boolean; created: boolean }>(`/api/access/${encodeURIComponent(userId)}/grants`, {
+      method: "POST",
+      body: { permission },
+    }),
+  revoke: (userId: string, permission: string) =>
+    request<{ ok: boolean; removed: boolean }>(
+      `/api/access/${encodeURIComponent(userId)}/grants/${encodeURIComponent(permission)}`,
+      { method: "DELETE" },
+    ),
+  setRole: (userId: string, role: "admin" | "lecturer") =>
+    request<{ ok: boolean }>(`/api/access/${encodeURIComponent(userId)}/role`, {
+      method: "POST",
+      body: { role },
+    }),
+};
+
+/**
+ * Templates are served behind the session, so a plain `<a href>` cannot fetch
+ * them — the file is downloaded with the token and handed to the browser as a
+ * blob. Failure is thrown rather than swallowed: the user asked for a file.
+ */
+export async function downloadImportTemplate(kind: ImportKind): Promise<void> {
+  const token = getToken();
+  const res = await fetch(`${API_URL}/api/import/template?kind=${encodeURIComponent(kind)}`, {
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, "error", "The template could not be downloaded");
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `slams-${kind}-template.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
 
 // ─── Settings ─────────────────────────────────────────────────────────────
 

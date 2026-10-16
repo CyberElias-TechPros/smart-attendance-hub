@@ -1,13 +1,13 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useSuspenseQuery, useQuery, useQueryClient } from "@tanstack/react-query";
-import { lecturerCoursesQO, unassignedCoursesQO } from "@/lib/queries";
+import { lecturerCoursesQO, myAccessQO, unassignedCoursesQO } from "@/lib/queries";
 import { PageHeader, StatCard } from "@/components/AppShell";
-import { BookOpen, Users, PlayCircle, ArrowRight, Check } from "lucide-react";
+import { BookOpen, Users, PlayCircle, ArrowRight, Check, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CourseGlyph } from "@/lib/courseIcons";
 import { RouteTransition } from "@/components/RouteTransition";
 import { EmptyState } from "@/components/EmptyState";
-import { courses as coursesApi } from "@/lib/api";
+import { courses as coursesApi, reports as reportsApi } from "@/lib/api";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/lecturer/")({
@@ -22,6 +22,18 @@ function LecturerDashboard() {
   const qc = useQueryClient();
   const totalStudents = courses.reduce((a, c) => a + c.enrolledStudentIds.length, 0);
   const { data: unassigned } = useQuery(unassignedCoursesQO);
+
+  // A reporting grant widens the reports this account may read (plan §9 / P5.2).
+  // The widened figures are fetched from the same endpoint administrators use,
+  // which is the point: the grant is enforced server-side, so this card shows
+  // what the server actually returned rather than a client-side impression.
+  const { data: accessInfo } = useQuery(myAccessQO);
+  const widerScopes = (accessInfo?.effective ?? []).filter((p) => p.startsWith("reports."));
+  const { data: scopedReport } = useQuery({
+    queryKey: ["reports", "courses", "granted-scope"],
+    queryFn: () => reportsApi.courses(),
+    enabled: widerScopes.length > 0,
+  });
 
   const claim = async (courseId: string) => {
     try {
@@ -42,6 +54,43 @@ function LecturerDashboard() {
         <StatCard label="Total Students" value={totalStudents} icon={Users} />
         <StatCard label="Ready to run" value="Any time" icon={PlayCircle} />
       </div>
+
+      {widerScopes.length > 0 && scopedReport ? (
+        <div className="mt-8 rounded-2xl border border-border/70 bg-card p-5 shadow-elegant">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4 text-primary" />
+            <h2 className="font-display text-lg font-semibold">Wider reporting scope</h2>
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            An administrator has granted you{" "}
+            <span className="font-medium text-foreground">
+              {widerScopes
+                .map((key) => accessInfo?.catalogue.find((c) => c.key === key)?.label ?? key)
+                .join(", ")}
+            </span>
+            . These figures cover every course in that scope, not only the ones you teach.
+          </p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <StatCard
+              label="Courses in scope"
+              value={scopedReport.totals.courses}
+              icon={BookOpen}
+            />
+            <StatCard label="Students" value={scopedReport.totals.enrolled} icon={Users} />
+            <StatCard
+              label="Classes held"
+              value={scopedReport.totals.classesHeld}
+              icon={PlayCircle}
+            />
+            <StatCard
+              label="Attendance"
+              value={scopedReport.totals.rate == null ? "—" : `${scopedReport.totals.rate}%`}
+              icon={ShieldCheck}
+              hint="Opportunity-weighted"
+            />
+          </div>
+        </div>
+      ) : null}
 
       {unassigned && unassigned.length > 0 && (
         <div className="mt-8 rounded-2xl border border-primary/30 bg-primary/5 p-5 shadow-elegant">

@@ -2,23 +2,55 @@ import { createFileRoute, Outlet } from "@tanstack/react-router";
 import { requireRole } from "@/lib/queries";
 import { AppShell, type NavItem } from "@/components/AppShell";
 import {
+  Bell,
+  CalendarCheck,
+  CalendarClock,
+  ClipboardList,
+  CirclePlus,
   LayoutDashboard,
   GraduationCap,
+  History,
   Users,
   Building2,
   BookOpen,
   FileBarChart,
+  Landmark,
+  ScrollText,
   Settings,
   Settings2,
+  ShieldCheck,
+  Trophy,
+  Tags,
+  Upload,
 } from "lucide-react";
 
+// The brief's sidebar. "Courses" is the expandable group: clicking the label
+// opens its landing page (All Courses) while the caret toggles the children.
 const nav: NavItem[] = [
-  { to: "/admin", label: "Overview", icon: LayoutDashboard },
+  { to: "/admin", label: "Dashboard", icon: LayoutDashboard },
   { to: "/admin/students", label: "Students", icon: GraduationCap },
-  { to: "/admin/lecturers", label: "Lecturers", icon: Users },
+  { to: "/admin/lecturers", label: "Lecturers / Staff", icon: Users },
   { to: "/admin/departments", label: "Departments", icon: Building2 },
-  { to: "/admin/courses", label: "Courses", icon: BookOpen },
+  { to: "/admin/faculties", label: "Faculties", icon: Landmark },
+  {
+    to: "/admin/courses",
+    label: "Courses",
+    icon: BookOpen,
+    children: [
+      { to: "/admin/courses", label: "All Courses", icon: ScrollText, exact: true },
+      { to: "/admin/courses/manage", label: "Add Course", icon: CirclePlus },
+      { to: "/admin/courses/categories", label: "Course Categories", icon: Tags },
+    ],
+  },
+  { to: "/admin/timetable", label: "Timetable", icon: CalendarClock },
+  { to: "/admin/attendance", label: "Attendance", icon: CalendarCheck },
+  { to: "/admin/examinations", label: "Examinations", icon: ClipboardList },
+  { to: "/admin/results", label: "Results", icon: Trophy },
+  { to: "/admin/notifications", label: "Notifications", icon: Bell },
   { to: "/admin/reports", label: "Reports", icon: FileBarChart },
+  { to: "/admin/imports", label: "Imports", icon: Upload },
+  { to: "/admin/access", label: "Access & roles", icon: ShieldCheck },
+  { to: "/admin/audit", label: "Audit trail", icon: History },
   { to: "/admin/settings", label: "Branding", icon: Settings2 },
   { to: "/settings", label: "Settings", icon: Settings },
 ];

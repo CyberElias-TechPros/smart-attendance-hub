@@ -16,10 +16,26 @@ import {
 } from "./auth";
 import { getRepo, type D1Database } from "./db";
 import { hashedPointer } from "./audit";
+import {
+  PERMISSIONS,
+  isPermission,
+  permissionLabel,
+  type Permission,
+} from "../../shared/permissions";
+import {
+  applyImport,
+  previewImport,
+  templateColumns,
+  type ImportApplyResult,
+  type ImportKind,
+} from "./import";
+import { toCsv } from "../../shared/csv";
+import { recordAudit, type AuditContext } from "./audit-log";
 import { BusinessError } from "./errors";
 import { ApiError, clientIp, jsonError, jsonOk, readJsonBody } from "./http";
 import { DEFAULT_LIMITS, FixedWindowLimiter } from "./rate-limit";
-import type { Role, User } from "./types";
+import { isValidTimeZone } from "./time";
+import type { ReportFilters, Role, User } from "./types";
 
 export interface Env {
   DB: D1Database;
@@ -276,6 +292,8 @@ const scheduleSchema = z
     codeIntervalSeconds: z.number().int().min(30).max(600).nullish(),
     seats: z.number().int().min(0).max(10000).optional(),
     recurrence: z.enum(["daily", "weekdays", "weekly", "custom"]),
+    /** Room / lecture theatre; surfaced in the weekly timetable grid. */
+    room: optionalShortStr(60),
     // ISO weekday numbers 1(Mon)..7(Sun), required for weekly/custom.
     days: z.array(z.number().int().min(1).max(7)).max(7).optional(),
     // Local wall-clock start of day in minutes (0 = 00:00, 540 = 09:00).
@@ -294,6 +312,178 @@ const scheduleSchema = z
 
 const setAttendanceStatusSchema = z.object({
   status: z.enum(["present", "late", "excused", "absent"]),
+  // Brief §9: every correction must be explainable after the fact. Enforced
+  // here (not just in the UI) so a script cannot bypass the trail.
+  reason: z.string().trim().min(3, "Give a short reason for this correction").max(280),
+});
+
+const deleteAttendanceSchema = z.object({
+  reason: z.string().trim().min(3, "Give a short reason for this deletion").max(280),
+  /** Admin-only escape hatch for finalised periods. */
+  override: z.boolean().optional(),
+});
+
+/** The eight attendance filters from the brief (§6). Every report, export and
+ *  print view takes exactly this shape, so "exports use the current filters" is
+ *  structural rather than something a caller has to remember. */
+const reportFilterSchema = z.object({
+  academicSessionId: z.string().trim().max(60).optional(),
+  semesterId: z.string().trim().max(60).optional(),
+  facultyId: z.string().trim().max(60).optional(),
+  departmentId: z.string().trim().max(60).optional(),
+  courseId: z.string().trim().max(60).optional(),
+  /**
+   * Several courses at once ("export the courses I selected"). Comma-separated
+   * so it fits a query string, which is what makes a selection shareable and
+   * makes the screen, the print view and the export agree on the same set.
+   */
+  courseIds: z.string().trim().max(4000).optional(),
+  lecturerId: z.string().trim().max(60).optional(),
+  from: z.coerce.number().int().optional(),
+  to: z.coerce.number().int().optional(),
+  status: z.enum(["present", "late", "excused", "absent"]).optional(),
+  search: z.string().trim().max(120).optional(),
+  category: z.string().trim().max(60).optional(),
+  sort: z
+    .enum([
+      "code",
+      "title",
+      "department",
+      "enrolled",
+      "classesHeld",
+      "classesAttended",
+      "rate",
+      "present",
+      "absent",
+      "late",
+    ])
+    .optional(),
+  dir: z.enum(["asc", "desc"]).optional(),
+  page: z.coerce.number().int().min(1).max(10_000).optional(),
+  pageSize: z.coerce.number().int().min(1).max(500).optional(),
+});
+
+const facultySchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  code: z.string().trim().min(2).max(12),
+  deanUserId: z.string().trim().max(60).optional(),
+  icon: z.string().trim().max(40).optional(),
+  color: z.string().trim().max(60).optional(),
+});
+
+const academicSessionSchema = z.object({
+  name: z.string().trim().min(4).max(60),
+  code: z.string().trim().min(4).max(40),
+  startsOn: z.number().int().optional(),
+  endsOn: z.number().int().optional(),
+  makeCurrent: z.boolean().optional(),
+});
+
+const semesterSchema = z.object({
+  academicSessionId: z.string().trim().min(1).max(60),
+  name: z.string().trim().min(3).max(60),
+  sequence: z.number().int().min(1).max(8).optional(),
+  startsOn: z.number().int().optional(),
+  endsOn: z.number().int().optional(),
+  makeCurrent: z.boolean().optional(),
+});
+
+const semesterUpdateSchema = z.object({
+  name: z.string().trim().min(3).max(60).optional(),
+  startsOn: z.number().int().nullable().optional(),
+  endsOn: z.number().int().nullable().optional(),
+});
+
+const exportAuditSchema = z.object({
+  format: z.enum(["pdf", "xlsx", "csv", "print"]),
+  scope: z.enum(["course", "courses", "all", "semester", "session", "date-range"]),
+  courseId: z.string().trim().max(60).optional(),
+  title: z.string().trim().max(160).optional(),
+  rowCount: z.number().int().min(0).max(1_000_000).optional(),
+  filters: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+});
+
+const examKindSchema = z.enum(["ca", "test", "exam", "practical"]);
+
+const examSchema = z.object({
+  courseId: idSchema,
+  title: z.string().trim().min(2).max(160),
+  kind: examKindSchema.default("exam"),
+  /** Contribution to the final score, in percent. Omitted ⇒ counts once. */
+  weight: z.number().min(0).max(100).nullish(),
+  maxScore: z.number().positive().max(10_000).default(100),
+  scheduledAt: z.number().int().positive().nullish(),
+  durationMinutes: z.number().int().min(5).max(600).nullish(),
+  venue: optionalShortStr(120),
+  room: optionalShortStr(60),
+  semesterId: z.string().trim().max(60).optional(),
+});
+
+const examUpdateSchema = z.object({
+  title: z.string().trim().min(2).max(160).optional(),
+  kind: examKindSchema.optional(),
+  weight: z.number().min(0).max(100).nullish(),
+  maxScore: z.number().positive().max(10_000).optional(),
+  scheduledAt: z.number().int().positive().nullish(),
+  durationMinutes: z.number().int().min(5).max(600).nullish(),
+  venue: optionalShortStr(120),
+  room: optionalShortStr(60),
+  published: z.boolean().optional(),
+});
+
+/**
+ * One mark per student. `score: null` explicitly clears a mark — "not marked
+ * yet" and "scored nothing" are different facts, and collapsing them would make
+ * an unmarked script count as a fail in every average.
+ */
+const resultsSchema = z.object({
+  rows: z
+    .array(
+      z.object({
+        studentId: idSchema,
+        score: z.number().min(0).max(10_000).nullable(),
+        grade: optionalShortStr(4),
+      }),
+    )
+    .min(1)
+    .max(1000),
+});
+
+const importSchema = z.object({
+  kind: z.enum(["students", "lecturers", "enrollments", "results"]),
+  csv: z.string().min(1).max(2_000_000),
+  courseId: idSchema.optional(),
+  examId: idSchema.optional(),
+  defaultPassword: z.string().trim().min(8).max(72).optional(),
+});
+
+const accessGrantSchema = z.object({
+  permission: z.string().trim().min(3).max(60),
+});
+
+/** Administrators and staff are the accounts whose access is editable here;
+ *  students are managed on the Students page. */
+const roleChangeSchema = z.object({ role: z.enum(["admin", "lecturer"]) });
+
+const snapshotSchema = z.object({
+  scope: z.enum(["semester", "course", "faculty", "department", "institution"]),
+  entityId: z.string().trim().max(60).optional(),
+  label: z.string().trim().min(2).max(200),
+  payload: z.unknown(),
+  totals: z.record(z.string(), z.number().nullable()).optional(),
+  rowCount: z.number().int().min(0).max(1_000_000).optional(),
+});
+
+const auditQuerySchema = z.object({
+  action: z.string().trim().max(60).optional(),
+  actorId: z.string().trim().max(60).optional(),
+  entityType: z.string().trim().max(60).optional(),
+  entityId: z.string().trim().max(60).optional(),
+  courseId: z.string().trim().max(60).optional(),
+  from: z.coerce.number().int().optional(),
+  to: z.coerce.number().int().optional(),
+  page: z.coerce.number().int().min(1).max(10_000).optional(),
+  pageSize: z.coerce.number().int().min(1).max(200).optional(),
 });
 
 const attendanceSchema = z.object({
@@ -319,6 +509,19 @@ const testimonialSchema = z.object({
 
 const siteSettingsSchema = z.object({
   institutionName: z.string().trim().min(1).max(120).optional(),
+  /** IANA timezone — every "today"/"this week" boundary is computed in it. */
+  timezone: z
+    .string()
+    .trim()
+    .max(64)
+    .refine((tz) => isValidTimeZone(tz), "Unknown IANA timezone")
+    .optional(),
+  /** Print/PDF branding (brief §7). */
+  logoUrl: z.string().trim().max(600).nullable().optional(),
+  reportFooterNote: z.string().trim().max(300).nullable().optional(),
+  /** Plan decisions D3/D4 — changeable without a deploy. */
+  lateCountsAsAttended: z.boolean().optional(),
+  excusedCountsAsAbsent: z.boolean().optional(),
   atRiskThreshold: z.number().min(0).max(100).optional(),
   marqueeItems: z.array(z.string().trim().max(80)).max(20).optional(),
   testimonials: z.array(testimonialSchema).max(12).optional(),
@@ -396,7 +599,118 @@ async function bodyOf<T>(req: Request, schema: z.ZodType<T>): Promise<T> {
   return result.data;
 }
 
+/** Validate query-string parameters against a zod schema (the read-side twin
+ *  of `bodyOf`). Empty parameters are dropped so `?courseId=` means "absent"
+ *  rather than "empty string". */
+async function queryOf<T>(req: Request, schema: z.ZodType<T>): Promise<T> {
+  const url = new URL(req.url);
+  const raw: Record<string, string> = {};
+  for (const [k, v] of url.searchParams) {
+    if (v !== "") raw[k] = v;
+  }
+  const result = schema.safeParse(raw);
+  if (!result.success) {
+    const first = result.error.issues[0];
+    throw new ApiError(
+      400,
+      "validation_error",
+      `${first.path.join(".") || "query"}: ${first.message}`,
+    );
+  }
+  return result.data;
+}
+
+/** Attribution for the audit trail: who, from where, in which request. Raw IPs
+ *  and user-agents are never stored — only HMAC pointers. */
+function auditCtx(req: Request, base: Base, user: User): AuditContext {
+  return {
+    actorId: user.id,
+    actorRole: user.role,
+    actorEmail: user.email,
+    ip: base.ip,
+    userAgent: req.headers.get("user-agent") ?? undefined,
+    reqId: base.reqId,
+    secret: getJwtSecret(base.env),
+  };
+}
+
 async function requireCourseOwnership(
+  repo: FullCtx["repo"],
+  user: User,
+  courseId: string,
+  opts: { allowEnrolledStudent?: boolean } = {},
+): Promise<void> {
+  if (user.role === "admin") return;
+  const course = await repo.getCourse(courseId);
+  if (!course) throw new ApiError(404, "not_found", "Course not found");
+  if (course.lecturerId === user.id) return;
+  // A student may read their own course (and, in the caller, only their own
+  // rows); anybody else — including a lecturer who does not teach it — may not.
+  if (opts.allowEnrolledStudent && user.role === "student") {
+    const mine = await repo.studentCourses(user.id);
+    if (mine.some((c) => c.id === courseId)) return;
+  }
+  throw new ApiError(403, "forbidden", "This course is not assigned to you");
+}
+
+/**
+ * May this person do this? Administrators hold every capability by role; anybody
+ * else holds exactly what an administrator granted them (plan §9 / P5.2). One
+ * function, so "what does this checkbox actually grant?" has one answer.
+ */
+async function can(repo: FullCtx["repo"], user: User, permission: Permission): Promise<boolean> {
+  if (user.role === "admin") return true;
+  return await repo.hasPermission(user.id, permission);
+}
+
+async function requirePermission(
+  ctx: FullCtx,
+  permission: Permission,
+  message?: string,
+): Promise<void> {
+  if (await can(ctx.repo, ctx.user, permission)) return;
+  throw new ApiError(
+    403,
+    "forbidden",
+    message ?? `This needs the "${permissionLabel(permission)}" permission`,
+  );
+}
+
+/**
+ * The data scope a user may read reports in.
+ *
+ * `filters` comes from the query string; the scope is applied *after* it and only
+ * ever narrows — so a hand-crafted request (or a UI bug) cannot widen what
+ * somebody sees. An administrator is institution-wide; a lecturer is pinned to
+ * their own courses unless a reporting grant says otherwise.
+ */
+async function reportScope(ctx: FullCtx, filters: ReportFilters): Promise<ReportFilters> {
+  const { user, repo } = ctx;
+  if (user.role === "admin") return filters;
+  if (await repo.hasPermission(user.id, "reports.institution")) return filters;
+  if (await repo.hasPermission(user.id, "reports.faculty")) {
+    const departments = await repo.listDepartments();
+    const mine = departments.find((d) => d.id === user.departmentId);
+    if (mine?.facultyId)
+      return { ...filters, scope: { facultyId: mine.facultyId, lecturerId: user.id } };
+    return { ...filters, scope: { lecturerId: user.id } };
+  }
+  if (await repo.hasPermission(user.id, "reports.department")) {
+    if (user.departmentId) {
+      return { ...filters, scope: { departmentId: user.departmentId, lecturerId: user.id } };
+    }
+    return { ...filters, scope: { lecturerId: user.id } };
+  }
+  return { ...filters, scope: { lecturerId: user.id } };
+}
+
+/**
+ * Read access to one course: the lecturer who teaches it, an administrator, or a
+ * reporting grant that covers the course. Writes keep using
+ * `requireCourseOwnership` — a grant widens what may be *read*, never what may be
+ * changed.
+ */
+async function requireCourseRead(
   repo: FullCtx["repo"],
   user: User,
   courseId: string,
@@ -404,9 +718,18 @@ async function requireCourseOwnership(
   if (user.role === "admin") return;
   const course = await repo.getCourse(courseId);
   if (!course) throw new ApiError(404, "not_found", "Course not found");
-  if (course.lecturerId !== user.id) {
-    throw new ApiError(403, "forbidden", "This course is not assigned to you");
+  if (course.lecturerId === user.id) return;
+  if (await repo.hasPermission(user.id, "reports.institution")) return;
+  if (await repo.hasPermission(user.id, "reports.department")) {
+    if (course.departmentId && course.departmentId === user.departmentId) return;
   }
+  if (await repo.hasPermission(user.id, "reports.faculty")) {
+    const departments = await repo.listDepartments();
+    const mine = departments.find((d) => d.id === user.departmentId);
+    const theirs = departments.find((d) => d.id === course.departmentId);
+    if (mine?.facultyId && theirs?.facultyId && mine.facultyId === theirs.facultyId) return;
+  }
+  throw new ApiError(403, "forbidden", "This course is not within your access");
 }
 
 const routes: Route[] = [
@@ -817,6 +1140,25 @@ const routes: Route[] = [
         longitude: data.longitude ?? inherited.longitude,
         radiusMeters: data.radiusMeters ?? inherited.radiusMeters,
       });
+      // Tell the enrolled students the room is open. This is the one notification
+      // with a clock on it: the code stops working when the lecture does, so the
+      // notice goes out with the session and nowhere else. A failed notice must
+      // never fail the lecture the lecturer just started.
+      try {
+        await ctx.repo.notify({
+          audience: { kind: "course", courseId: data.courseId },
+          kind: "session.started",
+          title: `${course?.code ?? "Your lecture"} has started`,
+          body: `${ctx.user.name} opened attendance. Sign in with the code on screen.`,
+          entityType: "session",
+          entityId: session.id,
+          href: "/student/attend",
+          courseId: data.courseId,
+          semesterId: session.semesterId,
+        });
+      } catch {
+        /* the lecture matters more than the notice */
+      }
       return jsonOk(session, { status: 201 });
     },
   },
@@ -869,8 +1211,35 @@ const routes: Route[] = [
           throw new ApiError(403, "forbidden", "This record belongs to a session you do not own");
         }
       }
-      await ctx.repo.deleteAttendanceRecord(p[0]);
-      return jsonOk({ ok: true });
+      const data = await bodyOf(req, deleteAttendanceSchema);
+      // Deleting a sign-in is the most destructive attendance action there is,
+      // so it needs a reason (brief §9) and, inside a finalised period, an
+      // explicit admin override.
+      if (data.override && ctx.user.role !== "admin") {
+        throw new ApiError(
+          403,
+          "forbidden",
+          "Only an administrator can override a finalised period",
+        );
+      }
+      const removed = await ctx.repo.deleteAttendanceRecord(p[0], {
+        ...auditCtx(req, base, ctx.user),
+        reason: data.reason,
+        allowLocked: Boolean(data.override && ctx.user.role === "admin"),
+      });
+      if (record.studentId && record.studentId !== ctx.user.id) {
+        await ctx.repo.notify({
+          audience: { kind: "user", userId: record.studentId },
+          kind: "attendance.voided",
+          title: "An attendance record was withdrawn",
+          body: `${ctx.user.name} withdrew your ${record.status} mark. Reason: ${data.reason}`,
+          entityType: "attendance_record",
+          entityId: p[0],
+          href: `/student/courses/${record.courseId}`,
+          courseId: record.courseId,
+        });
+      }
+      return jsonOk({ ok: true, removed });
     },
   },
   {
@@ -887,8 +1256,27 @@ const routes: Route[] = [
         }
       }
       const data = await bodyOf(req, setAttendanceStatusSchema);
-      await ctx.repo.setAttendanceStatus(p[0], data.status);
-      return jsonOk({ ok: true });
+      const updated = await ctx.repo.setAttendanceStatus(p[0], data.status, {
+        ...auditCtx(req, base, ctx.user),
+        reason: data.reason,
+        allowLocked: ctx.user.role === "admin",
+      });
+      // The student is told about the change to *their* record, with the reason
+      // and who decided it — an unnoticed correction is indistinguishable from
+      // a silent one (brief §9).
+      if (record.studentId && record.studentId !== ctx.user.id) {
+        await ctx.repo.notify({
+          audience: { kind: "user", userId: record.studentId },
+          kind: "attendance.corrected",
+          title: `Attendance updated to ${data.status}`,
+          body: `${ctx.user.name} changed your ${record.status} mark to ${data.status}. Reason: ${data.reason}`,
+          entityType: "attendance_record",
+          entityId: p[0],
+          href: `/student/courses/${record.courseId}`,
+          courseId: record.courseId,
+        });
+      }
+      return jsonOk({ record: updated });
     },
   },
 
@@ -899,7 +1287,11 @@ const routes: Route[] = [
     handler: async (req, _p, base) => {
       const ctx = await needAuth(req, base, ["admin", "lecturer"]);
       const courseId = new URL(req.url).searchParams.get("courseId") ?? undefined;
-      return jsonOk(await ctx.repo.listSchedules(ctx.user.id, courseId));
+      // An administrator sees the whole institution's timetable; a lecturer sees
+      // only their own series (the `lecturerId` argument is what scopes it, so it
+      // is never taken from the query string).
+      const lecturerId = ctx.user.role === "lecturer" ? ctx.user.id : undefined;
+      return jsonOk(await ctx.repo.listSchedules(lecturerId, courseId));
     },
   },
   {
@@ -1064,8 +1456,9 @@ const routes: Route[] = [
     pattern: /^\/api\/reports\/course\/([^/]+)$/,
     handler: async (req, p, base) => {
       const ctx = await needAuth(req, base, ["admin", "lecturer"]);
-      await requireCourseOwnership(ctx.repo, ctx.user, p[0]);
-      const report = await ctx.repo.courseReport(p[0]);
+      await requireCourseRead(ctx.repo, ctx.user, p[0]);
+      const filters = await queryOf(req, reportFilterSchema);
+      const report = await ctx.repo.courseReport(p[0], filters);
       if (!report) throw new ApiError(404, "not_found", "Course not found");
       return jsonOk(report);
     },
@@ -1084,6 +1477,890 @@ const routes: Route[] = [
     handler: async (req, _p, base) => {
       const ctx = await needAuth(req, base, ["admin"]);
       return jsonOk(await ctx.repo.adminOverview());
+    },
+  },
+
+  // ── Academic structure: faculties, sessions, semesters (plan §4.1) ──
+  {
+    method: "GET",
+    pattern: /^\/api\/faculties$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base);
+      return jsonOk(await ctx.repo.listFaculties());
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/faculties$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const data = await bodyOf(req, facultySchema);
+      const faculty = await ctx.repo.createFaculty(data);
+      await recordAudit(
+        ctx.repo,
+        { action: "course.create", entityType: "faculty", entityId: faculty.id, after: faculty },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk(faculty, { status: 201 });
+    },
+  },
+  {
+    method: "PATCH",
+    pattern: /^\/api\/faculties\/([^/]+)$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const data = await bodyOf(req, facultySchema.partial());
+      const faculty = await ctx.repo.updateFaculty(p[0], data);
+      await recordAudit(
+        ctx.repo,
+        { action: "course.update", entityType: "faculty", entityId: p[0], after: faculty },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk(faculty);
+    },
+  },
+  {
+    method: "DELETE",
+    pattern: /^\/api\/faculties\/([^/]+)$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      await ctx.repo.deleteFaculty(p[0]);
+      await recordAudit(
+        ctx.repo,
+        { action: "course.delete", entityType: "faculty", entityId: p[0] },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk({ ok: true });
+    },
+  },
+  {
+    // Attach (or detach) a department from a faculty — the link the brief's
+    // faculty filter, faculty column and faculty roll-ups all read (plan §4.1).
+    method: "PATCH",
+    pattern: /^\/api\/departments\/([^/]+)\/faculty$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const data = await bodyOf(req, z.object({ facultyId: z.string().trim().max(60).nullable() }));
+      await ctx.repo.setDepartmentFaculty(p[0], data.facultyId);
+      return jsonOk({ ok: true });
+    },
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/academics\/period$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base);
+      return jsonOk(await ctx.repo.academicPeriod());
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/academic-sessions$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const data = await bodyOf(req, academicSessionSchema);
+      const created = await ctx.repo.createAcademicSession(data);
+      await recordAudit(
+        ctx.repo,
+        {
+          action: "settings.update",
+          entityType: "academic_session",
+          entityId: created.id,
+          after: created,
+        },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk(created, { status: 201 });
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/semesters$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const data = await bodyOf(req, semesterSchema);
+      const created = await ctx.repo.createSemester(data);
+      await recordAudit(
+        ctx.repo,
+        { action: "settings.update", entityType: "semester", entityId: created.id, after: created },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk(created, { status: 201 });
+    },
+  },
+  {
+    method: "PATCH",
+    pattern: /^\/api\/semesters\/([^/]+)$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const data = await bodyOf(req, semesterUpdateSchema);
+      // `null` from the client means "clear this date"; the repo models an
+      // absent window as undefined.
+      return jsonOk(
+        await ctx.repo.updateSemester(p[0], {
+          ...(data.name !== undefined ? { name: data.name } : {}),
+          ...(data.startsOn !== undefined ? { startsOn: data.startsOn ?? undefined } : {}),
+          ...(data.endsOn !== undefined ? { endsOn: data.endsOn ?? undefined } : {}),
+        }),
+      );
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/semesters\/([^/]+)\/current$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      await ctx.repo.setCurrentSemester(p[0]);
+      return jsonOk(await ctx.repo.academicPeriod());
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/semesters\/([^/]+)\/finalize$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      // Freezing the records is only half of publishing: the figures that were
+      // announced are stored alongside them so the report stays reproducible
+      // even after a later correction or a threshold change (plan P5.3).
+      const { semester, snapshot } = await ctx.repo.finalizeSemesterWithSnapshot(p[0], ctx.user.id);
+      await recordAudit(
+        ctx.repo,
+        {
+          action: "semester.finalize",
+          entityType: "semester",
+          entityId: p[0],
+          after: { semester, snapshotId: snapshot.id, totals: snapshot.totals },
+        },
+        auditCtx(req, base, ctx.user),
+      );
+      // Freezing a period changes what everybody can do next (corrections are
+      // refused, the figures are fixed), so the staff who have to live with it
+      // are told by name and by label rather than discovering it by rejection.
+      await ctx.repo.notify({
+        audience: { kind: "role", role: "lecturer" },
+        kind: "semester.finalized",
+        title: `${semester.name} has been finalised`,
+        body: "Its attendance records and published figures are now frozen. Corrections need an administrator.",
+        entityType: "semester",
+        entityId: p[0],
+        href: "/admin/attendance",
+        semesterId: p[0],
+        except: [ctx.user.id],
+      });
+      return jsonOk({ ...semester, snapshot: { id: snapshot.id, createdAt: snapshot.createdAt } });
+    },
+  },
+
+  // ── Attendance reports (brief §4 + §6) ──
+  {
+    method: "GET",
+    pattern: /^\/api\/reports\/courses$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      const filters = await queryOf(req, reportFilterSchema);
+      // Whatever was asked for, the answer is narrowed to what this person may
+      // read: their own courses, their department, their faculty, or everything.
+      return jsonOk(await ctx.repo.coursesReport(await reportScope(ctx, filters)));
+    },
+  },
+  {
+    // Institution-wide lecture register (P4.2). Lecturers are pinned to their own
+    // lectures the same way every other report is, so the page cannot be used to
+    // read another lecturer's rosters.
+    method: "GET",
+    pattern: /^\/api\/reports\/sessions$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      const filters = await queryOf(req, reportFilterSchema);
+      return jsonOk(await ctx.repo.sessionRegister(await reportScope(ctx, filters)));
+    },
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/reports\/courses\/([^/]+)\/sessions$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      await requireCourseRead(ctx.repo, ctx.user, p[0]);
+      const filters = await queryOf(req, reportFilterSchema);
+      return jsonOk(await ctx.repo.courseSessionStats(p[0], filters));
+    },
+  },
+  {
+    // One student's lecture-by-lecture history inside one course (brief §5:
+    // "each student's attendance history"). Same maths the student sees on their
+    // own page, so an administrator and the student read identical numbers.
+    method: "GET",
+    pattern: /^\/api\/reports\/courses\/([^/]+)\/students\/([^/]+)$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      await requireCourseRead(ctx.repo, ctx.user, p[0]);
+      const rows = await ctx.repo.studentCourseSessions(p[1], p[0]);
+      const present = rows.filter((r) => r.status === "present").length;
+      const late = rows.filter((r) => r.status === "late").length;
+      const excused = rows.filter((r) => r.status === "excused").length;
+      const absent = rows.filter((r) => r.status === "absent").length;
+      return jsonOk({ rows, summary: { present, late, excused, absent, total: rows.length } });
+    },
+  },
+
+  // ── Examinations & results (plan §4.4 / P4.3) ──
+  {
+    method: "GET",
+    pattern: /^\/api\/exams$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer", "student"]);
+      const url = new URL(req.url);
+      const courseId = url.searchParams.get("courseId") ?? undefined;
+      const semesterId = url.searchParams.get("semesterId") ?? undefined;
+      if (courseId) await requireCourseOwnership(ctx.repo, ctx.user, courseId);
+      if (ctx.user.role === "student") {
+        // A student sees exams for courses they are enrolled in, and only once
+        // the results are published — an exam that exists is not yet news.
+        const mine = await ctx.repo.studentCourses(ctx.user.id);
+        const allowed = new Set(mine.map((c) => c.id));
+        const exams = (await ctx.repo.listExams(courseId, semesterId)).filter(
+          (e) => allowed.has(e.courseId) && (e.published || !courseId),
+        );
+        return jsonOk(exams.map((e) => (e.published ? e : { ...e, marked: undefined })));
+      }
+      if (ctx.user.role === "lecturer") {
+        const own = (await ctx.repo.listCourses()).filter((c) => c.lecturerId === ctx.user.id);
+        const allowed = new Set(own.map((c) => c.id));
+        return jsonOk(
+          (await ctx.repo.listExams(courseId, semesterId)).filter((e) => allowed.has(e.courseId)),
+        );
+      }
+      return jsonOk(await ctx.repo.listExams(courseId, semesterId));
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/exams$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      const data = await bodyOf(req, examSchema);
+      await requireCourseOwnership(ctx.repo, ctx.user, data.courseId);
+      const exam = await ctx.repo.createExam({
+        ...data,
+        weight: data.weight ?? undefined,
+        scheduledAt: data.scheduledAt ?? undefined,
+        durationMinutes: data.durationMinutes ?? undefined,
+        venue: data.venue || undefined,
+        room: data.room || undefined,
+        createdBy: ctx.user.id,
+      });
+      await recordAudit(
+        ctx.repo,
+        {
+          action: "exam.create",
+          entityType: "exam",
+          entityId: exam.id,
+          courseId: exam.courseId,
+          semesterId: exam.semesterId ?? null,
+          after: exam,
+        },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk(exam, { status: 201 });
+    },
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/exams\/([^/]+)$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer", "student"]);
+      const exam = await ctx.repo.getExam(p[0]);
+      if (!exam) throw new ApiError(404, "not_found", "Exam not found");
+      await requireCourseOwnership(ctx.repo, ctx.user, exam.courseId, {
+        allowEnrolledStudent: ctx.user.role === "student",
+      });
+      const results = await ctx.repo.listResults(exam.id);
+      if (ctx.user.role === "student") {
+        if (!exam.published) {
+          throw new ApiError(403, "forbidden", "These results have not been published yet");
+        }
+        return jsonOk({
+          exam,
+          results: results.filter((r) => r.studentId === ctx.user.id),
+        });
+      }
+      return jsonOk({ exam, results });
+    },
+  },
+  {
+    method: "PATCH",
+    pattern: /^\/api\/exams\/([^/]+)$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      const exam = await ctx.repo.getExam(p[0]);
+      if (!exam) throw new ApiError(404, "not_found", "Exam not found");
+      await requireCourseOwnership(ctx.repo, ctx.user, exam.courseId);
+      const data = await bodyOf(req, examUpdateSchema);
+      // Publishing releases marks to students, so it takes an administrator —
+      // or a lecturer an administrator has trusted with the capability. Either
+      // way the course has to be theirs (checked above), and a lecturer still
+      // cannot un-publish a bad result to hide it.
+      if (data.published !== undefined) {
+        await requirePermission(
+          ctx,
+          "results.publish",
+          "Only an administrator can publish or unpublish results",
+        );
+      }
+      const updated = await ctx.repo.updateExam(p[0], data);
+      await recordAudit(
+        ctx.repo,
+        {
+          action: "exam.update",
+          entityType: "exam",
+          entityId: p[0],
+          courseId: exam.courseId,
+          before: exam,
+          after: updated,
+        },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk(updated);
+    },
+  },
+  {
+    method: "DELETE",
+    pattern: /^\/api\/exams\/([^/]+)$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const exam = await ctx.repo.getExam(p[0]);
+      if (!exam) throw new ApiError(404, "not_found", "Exam not found");
+      const removed = await ctx.repo.deleteExam(p[0]);
+      await recordAudit(
+        ctx.repo,
+        {
+          action: "exam.delete",
+          entityType: "exam",
+          entityId: p[0],
+          courseId: exam.courseId,
+          before: exam,
+          reason: `Deleted an exam and ${removed} mark(s)`,
+        },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk({ ok: true, removed });
+    },
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/exams\/([^/]+)\/results$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      const exam = await ctx.repo.getExam(p[0]);
+      if (!exam) throw new ApiError(404, "not_found", "Exam not found");
+      await requireCourseOwnership(ctx.repo, ctx.user, exam.courseId);
+      return jsonOk({ exam, results: await ctx.repo.listResults(exam.id) });
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/exams\/([^/]+)\/results$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      const exam = await ctx.repo.getExam(p[0]);
+      if (!exam) throw new ApiError(404, "not_found", "Exam not found");
+      await requireCourseOwnership(ctx.repo, ctx.user, exam.courseId);
+      const data = await bodyOf(req, resultsSchema);
+      const outOfRange = data.rows.find((r) => r.score != null && r.score > exam.maxScore);
+      if (outOfRange) {
+        throw new ApiError(
+          400,
+          "validation_error",
+          `A score of ${outOfRange.score} exceeds the maximum of ${exam.maxScore}`,
+        );
+      }
+      const { saved, cleared } = await ctx.repo.saveResults(
+        p[0],
+        data.rows.map((r) => ({
+          studentId: r.studentId,
+          score: r.score,
+          grade: r.grade || undefined,
+        })),
+        ctx.user.id,
+      );
+      await recordAudit(
+        ctx.repo,
+        {
+          action: "result.save",
+          entityType: "exam",
+          entityId: p[0],
+          courseId: exam.courseId,
+          semesterId: exam.semesterId ?? null,
+          after: { saved, cleared, maxScore: exam.maxScore },
+          reason: `${saved} mark(s) recorded, ${cleared} cleared`,
+        },
+        auditCtx(req, base, ctx.user),
+      );
+      // Students only learn about a mark once it is published; notifying earlier
+      // would leak an unpublished result.
+      if (exam.published) {
+        for (const row of data.rows) {
+          if (row.score == null) continue;
+          await ctx.repo.notify({
+            audience: { kind: "user", userId: row.studentId },
+            kind: "result.published",
+            title: `${exam.title}: ${row.score}/${exam.maxScore}`,
+            body: `Your mark for ${exam.title} is available.`,
+            entityType: "exam",
+            entityId: exam.id,
+            href: `/student/results`,
+            courseId: exam.courseId,
+          });
+        }
+      }
+      return jsonOk({ ok: true, saved, cleared });
+    },
+  },
+  {
+    method: "DELETE",
+    pattern: /^\/api\/exams\/([^/]+)\/results\/([^/]+)$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      const exam = await ctx.repo.getExam(p[0]);
+      if (!exam) throw new ApiError(404, "not_found", "Exam not found");
+      await requireCourseOwnership(ctx.repo, ctx.user, exam.courseId);
+      const removed = await ctx.repo.deleteResult(p[0], p[1]);
+      if (!removed) throw new ApiError(404, "not_found", "No mark recorded for that student");
+      await recordAudit(
+        ctx.repo,
+        {
+          action: "result.delete",
+          entityType: "exam",
+          entityId: p[0],
+          courseId: exam.courseId,
+          reason: "Mark withdrawn",
+        },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk({ ok: true });
+    },
+  },
+  {
+    // Attendance × performance for one course (plan P4.4).
+    method: "GET",
+    pattern: /^\/api\/reports\/courses\/([^/]+)\/analytics$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      await requireCourseRead(ctx.repo, ctx.user, p[0]);
+      const filters = await queryOf(req, reportFilterSchema);
+      const analytics = await ctx.repo.resultAnalytics(p[0], filters);
+      if (!analytics) throw new ApiError(404, "not_found", "Course not found");
+      return jsonOk(analytics);
+    },
+  },
+
+  // ── Bulk import (plan P5.4 / decision D8) ──
+  {
+    // A downloadable template, so the registrar's file matches the importer
+    // rather than the importer guessing at theirs.
+    method: "GET",
+    pattern: /^\/api\/import\/template$/,
+    handler: async (req, _p, base) => {
+      await needAuth(req, base, ["admin", "lecturer"]);
+      const kind = (new URL(req.url).searchParams.get("kind") ?? "students") as ImportKind;
+      if (!["students", "lecturers", "enrollments", "results"].includes(kind)) {
+        throw new ApiError(400, "validation_error", "Unknown import kind");
+      }
+      const header = templateColumns(kind);
+      const sample: Record<ImportKind, string[][]> = {
+        students: [["Ada Obi", "ada.obi@slams.edu", "CSC/22/0001", "CSC", "200"]],
+        lecturers: [["Dr. Grace Adeyemi", "grace.adeyemi@slams.edu", "STF/0007", "EEE"]],
+        enrollments: [["CSC/22/0001"], ["CSC/22/0002"]],
+        results: [
+          ["CSC/22/0001", "68"],
+          ["CSC/22/0002", "54"],
+        ],
+      };
+      const body = toCsv(header, sample[kind]);
+      return new Response(body, {
+        headers: {
+          "content-type": "text/csv; charset=utf-8",
+          "content-disposition": `attachment; filename="slams-${kind}-template.csv"`,
+          ...corsHeaders(base.origin, allowedOrigins(base.env)),
+        },
+      });
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/import\/preview$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      const data = await bodyOf(req, importSchema);
+      if (data.courseId) await requireCourseOwnership(ctx.repo, ctx.user, data.courseId);
+      if (data.examId) {
+        const exam = await ctx.repo.getExam(data.examId);
+        if (!exam) throw new ApiError(404, "not_found", "Exam not found");
+        await requireCourseOwnership(ctx.repo, ctx.user, exam.courseId);
+      }
+      return jsonOk(await previewImport(ctx.repo, data));
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/import\/apply$/,
+    handler: async (req, _p, base) => {
+      // Creating accounts is an administrative action: a lecturer may import
+      // marks for their own course, but not people.
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      const data = await bodyOf(req, importSchema);
+      if (data.kind !== "results") {
+        await requirePermission(
+          ctx,
+          "imports.people",
+          "Only an administrator can import people or enrolments",
+        );
+      }
+      if (data.courseId) await requireCourseOwnership(ctx.repo, ctx.user, data.courseId);
+      if (data.examId) {
+        const exam = await ctx.repo.getExam(data.examId);
+        if (!exam) throw new ApiError(404, "not_found", "Exam not found");
+        await requireCourseOwnership(ctx.repo, ctx.user, exam.courseId);
+      }
+      let result: ImportApplyResult;
+      try {
+        result = await applyImport(ctx.repo, data);
+      } catch (error) {
+        throw new ApiError(
+          400,
+          "validation_error",
+          error instanceof Error ? error.message : "The import could not be applied",
+        );
+      }
+      await recordAudit(
+        ctx.repo,
+        {
+          action: "import.apply",
+          entityType: "import",
+          entityId: data.kind,
+          courseId: data.courseId ?? null,
+          after: result,
+          reason: `${data.kind}: ${result.created} created, ${result.linked} linked, ${result.skipped} skipped`,
+        },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk(result);
+    },
+  },
+
+  // ── Published period snapshots (plan §4.3 / P5.3) ──
+  {
+    method: "GET",
+    pattern: /^\/api\/snapshots$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      const url = new URL(req.url);
+      return jsonOk(
+        await ctx.repo.listSnapshots(
+          url.searchParams.get("scope") ?? undefined,
+          url.searchParams.get("entityId") ?? undefined,
+        ),
+      );
+    },
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/snapshots\/([^/]+)$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      const snapshot = await ctx.repo.getSnapshot(p[0]);
+      if (!snapshot) throw new ApiError(404, "not_found", "Snapshot not found");
+      return jsonOk(snapshot);
+    },
+  },
+  {
+    // Record the exact payload of a report the user is publishing/exporting, so
+    // the audit trail can name the figures as well as the fact.
+    method: "POST",
+    pattern: /^\/api\/snapshots$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const data = await bodyOf(req, snapshotSchema);
+      const snapshot = await ctx.repo.createSnapshot({
+        ...data,
+        payload: data.payload ?? null,
+        createdBy: ctx.user.id,
+      });
+      await recordAudit(
+        ctx.repo,
+        {
+          action: "snapshot.create",
+          entityType: "report",
+          entityId: snapshot.id,
+          semesterId: data.scope === "semester" ? (data.entityId ?? null) : null,
+          after: { scope: data.scope, label: data.label, totals: data.totals ?? null },
+          reason: data.label,
+        },
+        auditCtx(req, base, ctx.user),
+      );
+      return jsonOk(snapshot, { status: 201 });
+    },
+  },
+
+  // ── Notifications (plan §4.5 / P4.5) ──
+  {
+    // Scoped to the caller by construction: there is no way to read somebody
+    // else's inbox, which is why no role list is needed here.
+    method: "GET",
+    pattern: /^\/api\/notifications$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer", "student"]);
+      const url = new URL(req.url);
+      return jsonOk(
+        await ctx.repo.notificationsFor(ctx.user.id, {
+          page: url.searchParams.get("page") ? Number(url.searchParams.get("page")) : undefined,
+          pageSize: url.searchParams.get("pageSize")
+            ? Number(url.searchParams.get("pageSize"))
+            : undefined,
+          unreadOnly: url.searchParams.get("unreadOnly") === "1",
+        }),
+      );
+    },
+  },
+  {
+    // The bell polls this, so it stays deliberately tiny.
+    method: "GET",
+    pattern: /^\/api\/notifications\/summary$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer", "student"]);
+      return jsonOk({ unread: await ctx.repo.unreadNotificationCount(ctx.user.id) });
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/notifications\/read-all$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer", "student"]);
+      return jsonOk({ marked: await ctx.repo.markAllNotificationsRead(ctx.user.id) });
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/notifications\/([^/]+)\/read$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer", "student"]);
+      const ok = await ctx.repo.markNotificationRead(ctx.user.id, p[0]);
+      if (!ok) throw new ApiError(404, "not_found", "Notification not found");
+      return jsonOk({ ok: true });
+    },
+  },
+
+  // ── Audit trail (read-only by design — plan §4.6) ──
+  {
+    method: "GET",
+    pattern: /^\/api\/audit$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      await requirePermission(ctx, "audit.view");
+      const query = await queryOf(req, auditQuerySchema);
+      return jsonOk(await ctx.repo.listAudit(query));
+    },
+  },
+  // ── Capability grants & multiple administrators (plan §9 / P5.2) ──
+  {
+    method: "GET",
+    pattern: /^\/api\/access$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const [users, grants, departments] = await Promise.all([
+        ctx.repo.listUsers(),
+        ctx.repo.listAccessGrants(),
+        ctx.repo.listDepartments(),
+      ]);
+      const departmentName = new Map(departments.map((d) => [d.id, d.name]));
+      const byUser = new Map<string, Array<{ permission: string; grantedAt: number }>>();
+      for (const grant of grants) {
+        const list = byUser.get(grant.userId) ?? [];
+        list.push({ permission: grant.permission, grantedAt: grant.grantedAt });
+        byUser.set(grant.userId, list);
+      }
+      return jsonOk({
+        // The catalogue travels with the data: the screen renders the same keys
+        // the API checks, and a permission removed from the code disappears from
+        // the screen instead of becoming a checkbox that grants nothing.
+        permissions: PERMISSIONS,
+        admins: users.filter((u) => u.role === "admin").length,
+        staff: users
+          .filter((u) => u.role !== "student")
+          .map((u) => ({
+            id: u.id,
+            name: u.name,
+            email: u.email,
+            role: u.role,
+            staffId: u.staffId,
+            departmentId: u.departmentId,
+            departmentName: u.departmentId ? departmentName.get(u.departmentId) : undefined,
+            permissions: (byUser.get(u.id) ?? []).map((g) => g.permission),
+          })),
+      });
+    },
+  },
+  {
+    // A person's own capabilities, so a lecturer's sidebar can show the Audit
+    // trail link exactly when they hold the capability behind it.
+    method: "GET",
+    pattern: /^\/api\/access\/me$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base);
+      const permissions = await ctx.repo.permissionsFor(ctx.user.id);
+      return jsonOk({
+        role: ctx.user.role,
+        permissions,
+        // An administrator's answer is the whole catalogue — the honest one, since
+        // every check passes for them.
+        effective: ctx.user.role === "admin" ? PERMISSIONS.map((p) => p.key) : permissions,
+        // The catalogue is documentation, not a secret: shipping it means the
+        // client can name a capability without hard-coding a second copy of the
+        // list that would drift from the one the guards use.
+        catalogue: PERMISSIONS,
+      });
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/access\/([^/]+)\/grants$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const data = await bodyOf(req, accessGrantSchema);
+      if (!isPermission(data.permission)) {
+        throw new ApiError(400, "validation_error", "Unknown permission");
+      }
+      const target = await ctx.repo.getUser(p[0]);
+      if (!target) throw new ApiError(404, "not_found", "User not found");
+      if (target.role === "student") {
+        throw new ApiError(400, "validation_error", "Students cannot hold staff permissions");
+      }
+      const created = await ctx.repo.grantPermission(target.id, data.permission, ctx.user.id);
+      if (created) {
+        await recordAudit(
+          ctx.repo,
+          {
+            action: "permission.grant",
+            entityType: "user",
+            entityId: target.id,
+            after: { permission: data.permission },
+            reason: `Granted ${permissionLabel(data.permission)} to ${target.name}`,
+          },
+          auditCtx(req, base, ctx.user),
+        );
+      }
+      return jsonOk({ ok: true, created });
+    },
+  },
+  {
+    method: "DELETE",
+    pattern: /^\/api\/access\/([^/]+)\/grants\/([^/]+)$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const permission = decodeURIComponent(p[1]);
+      const target = await ctx.repo.getUser(p[0]);
+      if (!target) throw new ApiError(404, "not_found", "User not found");
+      const removed = await ctx.repo.revokePermission(target.id, permission);
+      if (removed) {
+        await recordAudit(
+          ctx.repo,
+          {
+            action: "permission.revoke",
+            entityType: "user",
+            entityId: target.id,
+            before: { permission },
+            reason: `Revoked ${permissionLabel(permission)} from ${target.name}`,
+          },
+          auditCtx(req, base, ctx.user),
+        );
+      }
+      return jsonOk({ ok: true, removed });
+    },
+  },
+  {
+    // Multiple administrators were already possible; making one — and taking the
+    // capability away — is the part that needs a guard rail.
+    method: "POST",
+    pattern: /^\/api\/access\/([^/]+)\/role$/,
+    handler: async (req, p, base) => {
+      const ctx = await needAuth(req, base, ["admin"]);
+      const data = await bodyOf(req, roleChangeSchema);
+      const target = await ctx.repo.getUser(p[0]);
+      if (!target) throw new ApiError(404, "not_found", "User not found");
+      // The invariant is about the institution, not about manners: an
+      // administrator may step down (or be demoted) as long as somebody is left
+      // holding the keys. That single rule is also what makes "demote yourself"
+      // safe, so there is no second rule for it.
+      if (target.role === "admin" && data.role !== "admin") {
+        const admins = await ctx.repo.countAdmins();
+        if (admins <= 1) {
+          throw new ApiError(
+            400,
+            "validation_error",
+            "The last administrator cannot be demoted — promote somebody else first",
+          );
+        }
+      }
+      await ctx.repo.setUserRole(target.id, data.role);
+      await recordAudit(
+        ctx.repo,
+        {
+          action: "user.role_change",
+          entityType: "user",
+          entityId: target.id,
+          before: { role: target.role },
+          after: { role: data.role },
+          reason: `${target.name}: ${target.role} → ${data.role}${target.id === ctx.user.id ? " (self)" : ""}`,
+        },
+        auditCtx(req, base, ctx.user),
+      );
+      const updated = await ctx.repo.getUser(target.id);
+      return jsonOk({ ok: true, user: updated });
+    },
+  },
+  {
+    // Recorded when a client finishes generating a report, so an institution can
+    // answer "who exported the attendance data, and with which filters?" — the
+    // brief's §9 requirement that exports respect access permissions has an
+    // auditable counterpart here.
+    method: "POST",
+    pattern: /^\/api\/reports\/exports$/,
+    handler: async (req, _p, base) => {
+      const ctx = await needAuth(req, base, ["admin", "lecturer"]);
+      const data = await bodyOf(req, exportAuditSchema);
+      await recordAudit(
+        ctx.repo,
+        {
+          action: "export.generate",
+          entityType: "report",
+          entityId: null,
+          courseId: data.courseId ?? null,
+          after: {
+            format: data.format,
+            scope: data.scope,
+            rowCount: data.rowCount ?? null,
+            filters: data.filters ?? null,
+          },
+          reason: data.title ?? null,
+        },
+        auditCtx(req, base, ctx.user),
+      );
+      // A finished export is an event the requester may have walked away from:
+      // the bell is where they find out it is ready (and what it contained).
+      await ctx.repo.notify({
+        audience: { kind: "user", userId: ctx.user.id },
+        kind: "export.ready",
+        title: `${data.format.toUpperCase()} export ready — ${data.scope}`,
+        body:
+          data.rowCount != null
+            ? `${data.rowCount} row(s) included. Filters: ${data.title ?? "none"}.`
+            : `Filters: ${data.title ?? "none"}.`,
+        entityType: "report",
+        entityId: data.courseId ?? null,
+        href: "/admin/reports",
+        courseId: data.courseId ?? null,
+      });
+      return jsonOk({ ok: true });
     },
   },
 ];
@@ -1105,8 +2382,19 @@ async function housekeeping(env: Env): Promise<void> {
       repo.closeExpiredSessions(),
       repo.materializeSchedules(now),
     ]);
-    if (closed > 0 || started > 0) {
-      console.log(JSON.stringify({ msg: "housekeeping", closed, started_schedules: started }));
+    // Heal lectures that closed before their roster tally was written (feature
+    // rollout, an interrupted close, a migration still rolling out). Bounded per
+    // tick so a busy institution can never turn housekeeping into a backfill.
+    const backfilled = await repo.backfillAbsences(5);
+    if (closed > 0 || started > 0 || backfilled > 0) {
+      console.log(
+        JSON.stringify({
+          msg: "housekeeping",
+          closed,
+          started_schedules: started,
+          absences_backfilled: backfilled,
+        }),
+      );
     }
   } catch (e) {
     console.error(JSON.stringify({ msg: "housekeeping_error" }), e);

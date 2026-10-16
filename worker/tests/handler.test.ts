@@ -68,7 +68,7 @@ describe("worker handler (integration)", () => {
   let studentToken: string;
   let lecturerId: string;
   let otherLecturerId: string;
-  let courseA: { id: string }; // owned by demo lecturer
+  let courseA: { id: string; code: string }; // owned by demo lecturer
   let courseB: { id: string }; // owned by a second lecturer
 
   beforeAll(async () => {
@@ -118,7 +118,11 @@ describe("worker handler (integration)", () => {
     });
 
     const coursesRes = await h.call("GET", "/api/courses", { token: lecturerToken });
-    const courses = (await coursesRes.json()) as Array<{ id: string; lecturerId?: string }>;
+    const courses = (await coursesRes.json()) as Array<{
+      id: string;
+      code: string;
+      lecturerId?: string;
+    }>;
     courseA = courses.find((c) => c.lecturerId === lecturerId)!;
     void otherLec;
   });
@@ -282,7 +286,7 @@ describe("worker handler (integration)", () => {
     });
     expect(ok.status).toBe(200);
     const body = (await ok.json()) as { course: { code: string } };
-    expect(body.course.code).toBe(courseA ? "CSC 305" : body.course.code);
+    expect(body.course.code).toBe(courseA.code);
 
     const dup = await h.call("POST", "/api/attendance", {
       token: studentToken,
@@ -301,8 +305,16 @@ describe("worker handler (integration)", () => {
     const records = (await h.raw
       .prepare("SELECT id FROM attendance_records WHERE session_id = ?")
       .all(session.id)) as Array<{ id: string }>;
+    // A deletion is auditable and must state why (brief §9).
+    const unreasoned = await h.call("DELETE", `/api/attendance/${records[0].id}`, {
+      token: lecturerToken,
+      body: {},
+    });
+    expect(unreasoned.status).toBe(400);
+
     const del = await h.call("DELETE", `/api/attendance/${records[0].id}`, {
       token: lecturerToken,
+      body: { reason: "Recorded against the wrong student" },
     });
     expect(del.status).toBe(200);
     await h.call("POST", `/api/sessions/${session.id}/end`, { token: lecturerToken });
@@ -576,17 +588,57 @@ describe("worker handler (integration)", () => {
     expect(d.attendance.length).toBe(1);
     expect(d.attendance[0].status).toBe("present");
 
-    const set = await h.call("PATCH", `/api/attendance/${d.attendance[0].id}/status`, {
+    // A correction without a reason is refused at the API layer, not just in the UI.
+    const unreasoned = await h.call("PATCH", `/api/attendance/${d.attendance[0].id}/status`, {
       token: lecturerToken,
       body: { status: "excused" },
     });
+    expect(unreasoned.status).toBe(400);
+
+    const set = await h.call("PATCH", `/api/attendance/${d.attendance[0].id}/status`, {
+      token: lecturerToken,
+      body: { status: "excused", reason: "Medical note received" },
+    });
     expect(set.status).toBe(200);
+    const setBody = (await set.json()) as { record: { status: string; reason: string } };
+    expect(setBody.record.status).toBe("excused");
+    expect(setBody.record.reason).toBe("Medical note received");
 
     const detail2 = await h.call("GET", `/api/sessions/${session.id}`, {
       token: lecturerToken,
     });
-    const d2 = (await detail2.json()) as { attendance: Array<{ id: string; status: string }> };
+    const d2 = (await detail2.json()) as {
+      attendance: Array<{ id: string; status: string }>;
+      absentees: Array<{ studentId: string }>;
+      counts: { present: number; absent: number; expected: number };
+    };
     expect(d2.attendance[0].status).toBe("excused");
+
+    // The correction is on the record for good.
+    const audit = await h.call("GET", "/api/audit?action=attendance.update", {
+      token: adminToken,
+    });
+    expect(audit.status).toBe(200);
+    const trail = (await audit.json()) as {
+      items: Array<{
+        action: string;
+        actorEmail: string;
+        reason: string;
+        before: { status: string };
+        after: { status: string };
+      }>;
+      total: number;
+    };
+    expect(trail.total).toBeGreaterThan(0);
+    const entry = trail.items.find((i) => i.after?.status === "excused");
+    expect(entry).toBeTruthy();
+    expect(entry!.actorEmail).toBe("lecturer@slams.edu");
+    expect(entry!.reason).toBe("Medical note received");
+    expect(entry!.before.status).toBe("present"); // before/after are both captured
+
+    // Only administrators may read the institution-wide trail.
+    const asLecturer = await h.call("GET", "/api/audit", { token: lecturerToken });
+    expect(asLecturer.status).toBe(403);
 
     await h.call("POST", `/api/sessions/${session.id}/end`, { token: lecturerToken });
   });

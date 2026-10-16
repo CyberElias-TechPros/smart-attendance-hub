@@ -207,7 +207,10 @@ describe("lifecycle: recurring schedules", () => {
 
 describe("lifecycle: lecturer claim flow", () => {
   it("lets a lecturer claim an unassigned course in their department", async () => {
-    const dept = (await repo.listDepartments())[0];
+    // Claim a course in the lecturer's OWN department: the catalogue now spans
+    // several faculties, so "the first department" is not a safe assumption.
+    const me = await repo.getUser(lecturerId);
+    const dept = (await repo.listDepartments()).find((d) => d.id === me!.departmentId)!;
     const unowned = await repo.createCourse({
       code: "CSC 888",
       title: "Unclaimed Course",

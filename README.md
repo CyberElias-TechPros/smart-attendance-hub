@@ -22,22 +22,49 @@ provider.
 - **Automatic percentages** — `attended ÷ sessions held × 100`, recomputed on demand.
 - **Analytics** — weekly attendance chart, per-student breakdowns, at-risk flags.
 - **PDF & Excel reports** — generated entirely client-side, ready to email/print.
+- **Institution reporting layer** — faculties → departments → courses, an academic
+  session/semester model, and an **All-Courses table** whose 12 columns (roster,
+  lectures held, average lectures attended, attendance %, present/absent/late)
+  are computed server-side from real attendance records.
+- **Attendance register** — `/admin/attendance`: every lecture that ran,
+  institution-wide, filterable by session, semester, faculty, department, course,
+  lecturer, date range and attendance status.
+- **Exports that match the screen** — one server-built dataset feeds the table,
+  the Excel workbook, the print preview and the PDF, so a filtered view and its
+  export can never disagree. Export one course, several (row selection), or all.
+- **Attendance integrity** — closing a lecture materialises the absences, so the
+  counts always reconcile with the roster; corrections require a reason, are
+  attributed in an **audit trail**, and notify the affected student.
+- **Notifications** — a bell with an unread badge and a full inbox for
+  corrections, withdrawals and finished exports.
+- **Examinations & results** — assessments per course with their own maximum
+  score, a mark-entry grid over the roster, publishing to students, and a
+  Results view that puts attendance and performance side by side: correlation,
+  the students under the attendance threshold, and the scripts still unmarked.
+- **Bulk CSV import** — students, staff, enrolments and marks, validated line by
+  line before anything is written; duplicates are skipped (so a re-run is safe),
+  a bad row aborts the file, and the whole import lands as one transaction.
+- **Capability grants** — lecturers are limited to their own courses; an
+  administrator can grant department, faculty or institution reporting, mark
+  publishing, people imports and audit-trail access, and promote other
+  administrators. Reading scope is applied server-side after the filters, so a
+  hand-written request cannot widen it.
 - **Secure auth** — PBKDF2 password hashing + signed JWT session tokens
-  (server-side role & ownership checks on every route).
+  (server-side role, ownership and capability checks on every route).
 
 ## Tech stack
 
-| Layer      | Choice                                                        |
-| ---------- | ------------------------------------------------------------- |
-| Frontend   | Vite + React 19 SPA, TanStack Router (file-based) + TanStack Query |
-| UI         | Tailwind CSS v4 + shadcn/ui primitives + Radix                |
-| Charts     | Recharts                                                       |
-| QR         | `qrcode` (generate) + `html5-qrcode` (scan)                   |
-| Auth       | `jose` (JWT) + Web Crypto PBKDF2                              |
-| Reports    | `jspdf` + `jspdf-autotable` + `xlsx`                          |
-| API        | **Cloudflare Worker** (TypeScript, zod validation, rate limits, CORS) |
-| Database   | **Cloudflare D1** (SQLite) — migrations in `migrations/`      |
-| Hosting    | Frontend on **Vercel**, API on **Cloudflare Workers**         |
+| Layer    | Choice                                                                |
+| -------- | --------------------------------------------------------------------- |
+| Frontend | Vite + React 19 SPA, TanStack Router (file-based) + TanStack Query    |
+| UI       | Tailwind CSS v4 + shadcn/ui primitives + Radix                        |
+| Charts   | Recharts                                                              |
+| QR       | `qrcode` (generate) + `html5-qrcode` (scan)                           |
+| Auth     | `jose` (JWT) + Web Crypto PBKDF2                                      |
+| Reports  | `jspdf` + `jspdf-autotable` + `xlsx`                                  |
+| API      | **Cloudflare Worker** (TypeScript, zod validation, rate limits, CORS) |
+| Database | **Cloudflare D1** (SQLite) — migrations in `migrations/`              |
+| Hosting  | Frontend on **Vercel**, API on **Cloudflare Workers**                 |
 
 ## Project structure
 
@@ -63,11 +90,11 @@ wrangler.toml        Worker + D1 binding config
 The database auto-seeds demo data on first use (locally or after migrations).
 Sign in with:
 
-| Role     | Email                 | Password      |
-| -------- | --------------------- | ------------- |
-| Admin    | `admin@slams.edu`     | `password123` |
-| Lecturer | `lecturer@slams.edu`  | `password123` |
-| Student  | `student@slams.edu`   | `password123` |
+| Role     | Email                | Password      |
+| -------- | -------------------- | ------------- |
+| Admin    | `admin@slams.edu`    | `password123` |
+| Lecturer | `lecturer@slams.edu` | `password123` |
+| Student  | `student@slams.edu`  | `password123` |
 
 > The admin can register additional students/lecturers, create departments &
 > courses, assign lecturers, and enroll students. Demo accounts can be disabled
@@ -100,10 +127,30 @@ comments).
 ### Tests
 
 ```bash
-npm test             # API client + worker auth + repo (real SQLite) + full HTTP handler suites
+npm test             # 233 tests: API client, worker auth, repo against real SQLite,
+                     # and full HTTP-handler suites (imports, exams, access, reports)
 npm run typecheck    # tsc --noEmit (frontend + worker)
 npm run lint         # eslint + prettier
 ```
+
+The API suites are the specification of record for the rules that matter: the
+weighted attendance maths, all-or-nothing imports, the barred-from-exam policy,
+scope enforcement (a grant can only widen reading, never writing) and the
+last-administrator invariant. CI runs lint + typecheck + tests + build on every
+push and pull request.
+
+## Documentation
+
+- **[docs/ADMIN-GUIDE.md](./docs/ADMIN-GUIDE.md)** — how an institution actually
+  runs SLAMS: setup, CSV imports, running lectures, marks and publishing,
+  capability grants, exports, semester snapshots, backups.
+- **[DEPLOY.md](./DEPLOY.md)** — deployment, secrets, D1 migrations, the
+  backup/restore runbook (Time Travel) and the restore drill.
+- **[docs/UPGRADE-PLAN.md](./docs/UPGRADE-PLAN.md)** — the build plan this
+  version was delivered against, with a delivery-status table and traceability to
+  the requirements document.
+- **[docs/GAP-ANALYSIS.md](./docs/GAP-ANALYSIS.md)** — the original audit of the
+  codebase against the requirements.
 
 ## Deploying
 

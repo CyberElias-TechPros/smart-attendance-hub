@@ -26,6 +26,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 
 export const Route = createFileRoute("/lecturer/sessions/$sessionId")({
   component: LiveSessionPage,
@@ -48,6 +58,14 @@ function LiveSessionPage() {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
+
+  const [correction, setCorrection] = useState<{
+    recordId: string;
+    studentName: string;
+    kind: "remove" | "status";
+    status?: AttendanceStatus;
+  } | null>(null);
+  const [reason, setReason] = useState("");
 
   const session = detailQ.data?.session;
   const isOpen = session && !session.endedAt && session.expiresAt > now;
@@ -99,24 +117,44 @@ function LiveSessionPage() {
     }
   };
 
-  const removeRecord = async (recordId: string) => {
+  const openCorrection = (
+    record: { id: string; name: string },
+    kind: "remove" | "status",
+    status?: AttendanceStatus,
+  ) => {
+    setCorrection({ recordId: record.id, studentName: record.name, kind, status });
+    setReason("");
+  };
+
+  // Both corrections funnel through one audited path: the server refuses a
+  // change without a reason, so the dialog is the only way to make one.
+  const submitCorrection = async () => {
+    if (!correction) return;
+    if (reason.trim().length < 3) {
+      toast.error("Please give a short reason (at least 3 characters)");
+      return;
+    }
     try {
-      await sessions.removeAttendance(recordId);
-      toast.success("Attendance removed");
+      if (correction.kind === "remove") {
+        await sessions.removeAttendance(correction.recordId, { reason: reason.trim() });
+        toast.success("Attendance removed and logged");
+      } else {
+        await sessions.setAttendanceStatus(correction.recordId, correction.status!, {
+          reason: reason.trim(),
+        });
+        toast.success("Status updated and logged");
+      }
+      setCorrection(null);
       qc.invalidateQueries({ queryKey: ["session-detail", sessionId] });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
     }
   };
 
-  const setStatus = async (recordId: string, status: AttendanceStatus) => {
-    try {
-      await sessions.setAttendanceStatus(recordId, status);
-      qc.invalidateQueries({ queryKey: ["session-detail", sessionId] });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed");
-    }
-  };
+  const removeRecord = (record: { id: string; name: string }) => openCorrection(record, "remove");
+
+  const setStatus = (record: { id: string; name: string }, status: AttendanceStatus) =>
+    openCorrection(record, "status", status);
 
   return (
     <>
@@ -235,14 +273,17 @@ function LiveSessionPage() {
                       {new Date(a.timestamp).toLocaleTimeString()}
                     </TableCell>
                     <TableCell>
-                      <StatusSelect value={a.status} onChange={(v) => setStatus(a.id, v)} />
+                      <StatusSelect
+                        value={a.status}
+                        onChange={(v) => setStatus({ id: a.id, name: a.name }, v)}
+                      />
                     </TableCell>
                     <TableCell className="text-right">
                       <Button
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                        onClick={() => removeRecord(a.id)}
+                        onClick={() => removeRecord({ id: a.id, name: a.name })}
                         title="Remove attendance"
                       >
                         <Trash2 className="h-4 w-4" />
@@ -262,6 +303,45 @@ function LiveSessionPage() {
           </div>
         </div>
       </div>
+
+      {/* Every correction is recorded with who, when and why (brief §9). */}
+      <Dialog open={correction !== null} onOpenChange={(open) => !open && setCorrection(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {correction?.kind === "remove" ? "Remove attendance" : "Change attendance status"}
+            </DialogTitle>
+            <DialogDescription>
+              {correction?.kind === "remove"
+                ? `Removing ${correction?.studentName}'s record from this lecture.`
+                : `Set ${correction?.studentName}'s status to “${correction?.status}”.`}{" "}
+              The reason is stored in the audit trail with your name and the time.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="correction-reason">Reason (required)</Label>
+            <Textarea
+              id="correction-reason"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="e.g. Verified a medical excuse with the HOD"
+              rows={3}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setCorrection(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant={correction?.kind === "remove" ? "destructive" : "default"}
+              onClick={() => void submitCorrection()}
+            >
+              {correction?.kind === "remove" ? "Remove record" : "Save status"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

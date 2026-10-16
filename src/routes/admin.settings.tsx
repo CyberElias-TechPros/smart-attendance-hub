@@ -29,7 +29,12 @@ function AdminSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({
     institutionName: "",
-    atRiskThreshold: 70,
+    atRiskThreshold: 75,
+    timezone: "Africa/Lagos",
+    logoUrl: "",
+    reportFooterNote: "",
+    lateCountsAsAttended: true,
+    excusedCountsAsAbsent: true,
     demoAccountsEnabled: true,
     demoPassword: "",
     demoEmailDomain: "",
@@ -44,7 +49,12 @@ function AdminSettingsPage() {
     if (!data) return;
     setForm({
       institutionName: data.institutionName ?? "SLAMS",
-      atRiskThreshold: data.atRiskThreshold ?? 70,
+      atRiskThreshold: data.atRiskThreshold ?? 75,
+      timezone: data.timezone ?? "Africa/Lagos",
+      logoUrl: data.logoUrl ?? "",
+      reportFooterNote: data.reportFooterNote ?? "",
+      lateCountsAsAttended: data.lateCountsAsAttended ?? true,
+      excusedCountsAsAbsent: data.excusedCountsAsAbsent ?? true,
       demoAccountsEnabled: data.demoAccountsEnabled ?? true,
       demoPassword: data.demoPassword ?? "",
       demoEmailDomain: data.demoEmailDomain ?? "slams.edu",
@@ -63,6 +73,11 @@ function AdminSettingsPage() {
       await settings.save({
         institutionName: form.institutionName,
         atRiskThreshold: form.atRiskThreshold,
+        timezone: form.timezone,
+        logoUrl: form.logoUrl.trim() || null,
+        reportFooterNote: form.reportFooterNote.trim() || null,
+        lateCountsAsAttended: form.lateCountsAsAttended,
+        excusedCountsAsAbsent: form.excusedCountsAsAbsent,
         demoAccountsEnabled: form.demoAccountsEnabled,
         demoPassword: form.demoPassword,
         demoEmailDomain: form.demoEmailDomain,
@@ -89,8 +104,80 @@ function AdminSettingsPage() {
 
   return (
     <RouteTransition>
-      <PageHeader title="Branding" subtitle="Institution name, thresholds, and demo settings." />
+      <PageHeader
+        title="Settings"
+        subtitle="Institution identity, reporting period controls and attendance policy."
+      />
       <form onSubmit={save} className="mt-6 grid gap-6 lg:grid-cols-3">
+        {/* Reporting identity: everything here feeds the printed/PDF report. */}
+        <Card className="lg:col-span-3 space-y-4 rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
+          <div>
+            <h2 className="font-display text-lg font-semibold">Reporting &amp; exports</h2>
+            <p className="text-xs text-muted-foreground">
+              The logo appears in the printed report header; the note appears in the footer of every
+              generated report.
+            </p>
+          </div>
+          <div className="grid gap-4 md:grid-cols-3">
+            <div className="space-y-1.5">
+              <Label>Institution logo URL</Label>
+              <Input
+                value={form.logoUrl}
+                onChange={(e) => set({ logoUrl: e.target.value })}
+                placeholder="https://…/logo.png"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Report footer note</Label>
+              <Input
+                value={form.reportFooterNote}
+                onChange={(e) => set({ reportFooterNote: e.target.value })}
+                placeholder="Verified by the Examinations Office"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Institution timezone</Label>
+              <Input
+                value={form.timezone}
+                onChange={(e) => set({ timezone: e.target.value })}
+                placeholder="Africa/Lagos"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                “Today”, “this week” and every date boundary are computed in this timezone.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-6">
+            {[
+              {
+                key: "lateCountsAsAttended" as const,
+                label: "Count late arrivals as attended",
+                hint: "Affects every percentage in the system.",
+              },
+              {
+                key: "excusedCountsAsAbsent" as const,
+                label: "Excused absences stay in the denominator",
+                hint: "Off = an approved excuse also removes the expectation.",
+              },
+            ].map((flag) => (
+              <label key={flag.key} className="flex items-start gap-3 text-sm">
+                <Switch checked={form[flag.key]} onCheckedChange={(v) => set({ [flag.key]: v })} />
+                <span>
+                  {flag.label}
+                  <span className="block text-[11px] text-muted-foreground">{flag.hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {form.logoUrl && (
+            <div className="flex items-center gap-3 rounded-xl border border-border/60 bg-muted/20 p-3">
+              <img src={form.logoUrl} alt="Logo preview" className="h-10 w-10 object-contain" />
+              <span className="text-xs text-muted-foreground">
+                Preview — this is how the report header will look.
+              </span>
+            </div>
+          )}
+        </Card>
         <Card className="lg:col-span-2 space-y-4 rounded-2xl border border-border/70 bg-card p-6 shadow-elegant">
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-1.5">

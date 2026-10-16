@@ -5,11 +5,27 @@
 // TanStack Start `loader`s), and page components then use
 // `useSuspenseQuery` for the same data.
 
-import { queryOptions, type QueryClient } from "@tanstack/react-query";
+import { keepPreviousData, queryOptions, type QueryClient } from "@tanstack/react-query";
 import { redirect } from "@tanstack/react-router";
 
-import { auth, courses, departments, reports, sessions, settings, student, users } from "./api";
-import type { Role, User } from "./types";
+import {
+  academics,
+  access,
+  audit,
+  exams,
+  auth,
+  courses,
+  departments,
+  faculties,
+  notifications,
+  reports,
+  schedules,
+  sessions,
+  settings,
+  student,
+  users,
+} from "./api";
+import type { ReportFilters, Role, User } from "./types";
 
 export const meQO = queryOptions({
   queryKey: ["me"],
@@ -66,16 +82,139 @@ export const openSessionsQO = queryOptions({
   staleTime: 5_000,
 });
 
-export const courseReportQO = (courseId: string) =>
+export const courseReportQO = (courseId: string, filters: ReportFilters = {}) =>
   queryOptions({
-    queryKey: ["report", courseId],
-    queryFn: () => reports.course(courseId),
+    queryKey: ["report", courseId, filters],
+    queryFn: () => reports.course(courseId, filters),
     enabled: Boolean(courseId),
+  });
+
+export const sessionDetailQO = (sessionId: string) =>
+  queryOptions({
+    queryKey: ["session", sessionId],
+    queryFn: () => sessions.detail(sessionId),
+    enabled: Boolean(sessionId),
+  });
+
+/** A student's history inside one course — loaded only when a row is opened. */
+export const courseStudentHistoryQO = (courseId: string, studentId: string) =>
+  queryOptions({
+    queryKey: ["report", "student", courseId, studentId],
+    queryFn: () => reports.courseStudentHistory(courseId, studentId),
+    enabled: Boolean(courseId && studentId),
   });
 
 export const adminOverviewQO = queryOptions({
   queryKey: ["admin", "overview"],
   queryFn: () => reports.adminOverview(),
+});
+
+export const facultiesQO = queryOptions({
+  queryKey: ["faculties"],
+  queryFn: () => faculties.list(),
+  staleTime: 60_000,
+});
+
+export const academicPeriodQO = queryOptions({
+  queryKey: ["academics", "period"],
+  queryFn: () => academics.period(),
+  staleTime: 60_000,
+});
+
+/** The All-Courses table (brief §4). Keyed by the full filter object so a
+ *  filter change is a cache miss, never a stale table. */
+export const coursesReportQO = (filters: ReportFilters) =>
+  queryOptions({
+    queryKey: ["reports", "courses", filters],
+    queryFn: () => reports.courses(filters),
+    // Keep the previous page visible while the next one loads: a table that
+    // blanks out on every sort click feels broken.
+    placeholderData: keepPreviousData,
+  });
+
+export const courseSessionsQO = (courseId: string, filters: ReportFilters = {}) =>
+  queryOptions({
+    queryKey: ["reports", "course-sessions", courseId, filters],
+    queryFn: () => reports.courseSessions(courseId, filters),
+    enabled: Boolean(courseId),
+  });
+
+export const auditQO = (query: Record<string, string | number | undefined> = {}) =>
+  queryOptions({
+    queryKey: ["audit", query],
+    queryFn: () => audit.list(query as Parameters<typeof audit.list>[0]),
+  });
+
+// ─── Notifications (plan §4.5 / P4.5) ───────────────────────────────────────
+
+export const examsQO = (query: { courseId?: string; semesterId?: string } = {}) =>
+  queryOptions({
+    queryKey: ["exams", query],
+    queryFn: () => exams.list(query),
+    placeholderData: keepPreviousData,
+  });
+
+export const examDetailQO = (id: string) =>
+  queryOptions({
+    queryKey: ["exams", id],
+    queryFn: () => exams.get(id),
+    enabled: Boolean(id),
+  });
+
+export const resultAnalyticsQO = (courseId: string, filters: ReportFilters = {}) =>
+  queryOptions({
+    queryKey: ["reports", "analytics", courseId, filters],
+    queryFn: () => exams.analytics(courseId, filters),
+    enabled: Boolean(courseId),
+    placeholderData: keepPreviousData,
+  });
+
+export const schedulesQO = queryOptions({
+  queryKey: ["schedules"],
+  queryFn: () => schedules.list(),
+});
+
+export const sessionRegisterQO = (filters: ReportFilters = {}) =>
+  queryOptions({
+    queryKey: ["reports", "sessions", filters],
+    queryFn: () => reports.sessions(filters),
+    placeholderData: keepPreviousData,
+  });
+
+export const notificationsQO = (opts: { page?: number; unreadOnly?: boolean } = {}) =>
+  queryOptions({
+    queryKey: ["notifications", opts],
+    queryFn: () => notifications.list(opts),
+    placeholderData: keepPreviousData,
+  });
+
+/**
+ * Unread badge. Polled rather than pushed: at this scale one cheap COUNT every
+ * 30 s costs far less than a socket per tab, and the badge is allowed to be
+ * half a minute stale. `refetchIntervalInBackground: false` keeps a forgotten
+ * tab quiet.
+ */
+export const notificationSummaryQO = queryOptions({
+  queryKey: ["notifications", "summary"],
+  queryFn: () => notifications.summary(),
+  refetchInterval: 30_000,
+  refetchIntervalInBackground: false,
+  staleTime: 15_000,
+});
+
+// ─── Capabilities & administrators (plan §9 / P5.2) ─────────────────────────
+
+export const accessQO = queryOptions({
+  queryKey: ["access"],
+  queryFn: () => access.list(),
+});
+
+/** A person's own capabilities — the sidebar and Settings read this rather than
+ *  guessing from the role. */
+export const myAccessQO = queryOptions({
+  queryKey: ["access", "me"],
+  queryFn: () => access.me(),
+  staleTime: 60_000,
 });
 
 export const usersQO = (role?: Role) =>
